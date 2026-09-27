@@ -43,13 +43,41 @@ You'll test on Alpaca paper only, with the paper account's $100,000.
 an assumption that paper fills can't verify. No leverage: position size stays
 at most the equity. Results at this size say nothing about a $20 account.
 
-## PENDING: Strategy choice
+## 2026-09-28: Strategy C, intraday momentum (last half hour), frozen before any backtest
 
-Fill this in before any strategy backtest:
-- Strategy (A, B or C from `docs/strategies.md`):
-- Mechanism in your own words (who loses to you, and why they keep doing it):
-- Exact rules:
-- Every parameter, its pre-committed value, and why that value:
-- What result would make you abandon it:
+Chosen by you from `docs/strategies.md`.
+
+**Mechanism** (from the literature; still to be restated in your own words):
+leveraged ETFs must rebalance near the close in the direction of the day's
+move, and options dealers who are short gamma hedge the same way (Baltussen,
+Da, Lammers & Martens 2021). Those flows are forced, so the direction of the
+day's move so far predicts the direction of the last half hour (Gao, Han, Li
+& Zhou 2018). The counterparty is whoever takes the other side of those
+forced trades.
+
+**Rules** (all times ET; decisions use only bars that have closed):
+1. Trade only on full sessions (09:30-16:00). Skip half days.
+2. Signal: r = (close of the 09:59 bar) / (previous session's official close) - 1.
+   Previous close comes from the SIP daily bar, split- and dividend-adjusted.
+3. Long if r > 0; otherwise no trade that day. Long-only.
+4. Entry: at 15:30, market buy for the full account (no leverage). Backtest fill
+   = open of the 15:30 bar, plus half-spread and slippage.
+5. Exit: market sell at 15:55 (your "flat before the close" rule). Backtest
+   fill = open of the 15:55 bar, minus costs. Not chosen: the closing auction
+   (market-on-close). It may capture more of the effect but breaks your rule.
+6. Protective stop: 1.0% below the entry fill, placed as soon as the entry
+   fills. Backtest: if a bar's low reaches the stop, fill at the lower of the
+   stop and that bar's open, minus stop slippage.
+7. Data: 09:30-10:00 and 15:00-15:30 must be gap-free (max_missing_minutes = 0),
+   and live bars must be fresh. Otherwise no entry that day. Gaps and stale
+   data block entries, **never exits**: an open position is always flattened.
+
+**Parameters:** signal time 10:00, threshold 0, entry 15:30, exit 15:55 and
+stop 1.0%. All fixed by the paper or by your rules, not tuned. The stop is our
+only free choice: about 4 times a typical last-half-hour move, so it should
+fire only on unusual days.
+
+**Abandon if:** mean net P&L per trade on validation is <= 0, or it fails any
+of the three baselines on validation. No retuning afterwards.
 
 ## Tuned-parameter trial count: 0

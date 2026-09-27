@@ -8,9 +8,10 @@ version = "0.1.0"
 description = "Learning project: an intraday trading bot that has to beat three baselines, net of costs, before it may trade."
 readme = "README.md"
 requires-python = ">=3.11"
-# Module 1 uses only the standard library. Market data and broker packages are
-# added with the modules that need them.
-dependencies = []
+dependencies = [
+    "alpaca-py>=0.44,<1",  # Alpaca market data and (paper) trading
+    "tzdata",               # time zone database, needed for America/New_York on Windows
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

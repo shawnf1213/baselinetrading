@@ -29,6 +29,14 @@ VALID = {
         "cat_fee_per_share_usd": 0.000003,
         "round_each_fee_up_to_cent": True,
     },
+    "data": {
+        "live_feed": "iex",
+        "research_feed": "sip",
+        "adjustment": "all",
+        "max_missing_minutes": 0,
+        "max_staleness_seconds": 90,
+        "fetch_attempts": 3,
+    },
     "splits": {
         "in_sample": {"start": dt.date(2016, 1, 4), "end": dt.date(2020, 12, 31)},
         "validation": {"start": dt.date(2021, 1, 1), "end": dt.date(2022, 12, 31)},
@@ -222,3 +230,10 @@ def test_split_dates_may_be_iso_strings():
     raw = valid()
     raw["splits"]["in_sample"] = {"start": "2016-01-04", "end": "2020-12-31"}
     assert parse(raw).splits.in_sample.start == dt.date(2016, 1, 4)
+
+
+@pytest.mark.parametrize(("key", "value"), [("live_feed", "IEX"), ("research_feed", "delayed_sip"), ("adjustment", 1)])
+def test_data_choices_must_be_exact(key, value):
+    raw = valid()
+    raw["data"][key] = value
+    assert any(p.startswith(f"data.{key} must be one of") for p in problems_for(raw))

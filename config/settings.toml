@@ -52,6 +52,23 @@ cat_fee_per_share_usd = 0.000003
 # a $0.000006 fee. true is the conservative choice (docs/methodology.md, sec. 1).
 round_each_fee_up_to_cent = true
 
+[data]
+# Free plan: real-time data is IEX only (~2.5% of volume). Consolidated (SIP)
+# history is free once it's 15+ minutes old, so research uses SIP. The live/
+# research difference is measured by backtesting on both feeds.
+live_feed = "iex"
+research_feed = "sip"
+# Split- and dividend-adjusted prices, the same for research and live. Raw
+# prices would show a fake drop on every SPY ex-dividend day.
+adjustment = "all"
+# Missing 1-minute bars tolerated inside a window the strategy needs. 0 means
+# any gap means no trade that day.
+max_missing_minutes = 0
+# Live only: the newest bar must have ended at most this long ago.
+max_staleness_seconds = 90
+# Tries per request (with backoff) before the data counts as unavailable.
+fetch_attempts = 3
+
 [splits]
 # Split by date, fixed on 2026-09-27 before any market data was downloaded.
 # Don't read the holdout until the strategy is frozen (see docs/decisions.md).

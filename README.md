@@ -12,8 +12,8 @@ the no-change forecast, buy-and-hold, and random entries (see
 |---|---|---|
 | 0 | Edge definition: cost model, breakeven win rate, sample sizes | done |
 | 1 | Project structure, fail-closed config, credentials | done |
-| 2 | Market data with staleness and gap detection | next |
-| 3 | Strategy (separate from execution) | waiting on your choice, see [docs/strategies.md](docs/strategies.md) |
+| 2 | Market data with staleness and gap detection | done |
+| 3 | Strategy C, last-half-hour momentum (separate from execution) | next; rules frozen in [docs/decisions.md](docs/decisions.md) |
 | 4 | Backtester: costs, walk-forward, baselines, trial ledger | |
 | 5 | Risk manager with order veto | |
 | 6 | Execution, Alpaca paper only | |
@@ -29,6 +29,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 python -m pytest                     # tests
 python -m baselinetrading.edge       # the cost / breakeven / sample-size arithmetic
+python -m baselinetrading.data_check # needs paper keys: fetches one recent session, both feeds
 ```
 
 Credentials come **only** from environment variables, and only paper keys
@@ -39,7 +40,12 @@ cp .env.example .env                 # .env is git-ignored; fill in your paper k
 set -a; source .env; set +a
 ```
 
-Nothing in module 1 needs the keys yet.
+Only `data_check` (and later the bot) needs the keys; the tests don't.
+
+The Alpaca MCP server (lets an AI assistant trade from chat) is fine for
+read-only inspection of the paper account. It's not part of the bot: orders
+sent through it would bypass the risk manager, the fail-closed checks and the
+logging.
 
 ## Safety: rules in code, not settings
 
@@ -88,5 +94,9 @@ src/baselinetrading/
   costs.py                  itemised round-trip cost, breakeven win rate
   stats.py                  Wilson intervals, verdicts, trades needed
   edge.py                   prints the arithmetic for your settings
+  bars.py                   Bar/Session types; gap, sanity and staleness checks
+  market_data.py            fetch with retries, cache past sessions, holdout lock
+  alpaca_client.py          thin alpaca-py adapter (paper trading client only)
+  data_check.py             end-to-end data check with your keys
 tests/                      one test file per module
 ```

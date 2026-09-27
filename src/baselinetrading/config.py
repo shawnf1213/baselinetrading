@@ -32,7 +32,9 @@ REGULAR_SESSION_MINUTES = 390  # 09:30-16:00 ET
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings.toml"
 
-_SECTIONS = ("account", "risk", "trading", "costs", "splits")
+_SECTIONS = ("account", "risk", "trading", "costs", "data", "splits")
+_FEEDS = ("iex", "sip")
+_ADJUSTMENTS = ("raw", "split", "dividend", "all")
 _SECRET_LIKE = re.compile(r"secret|passw|token|api_?key|key_?id", re.IGNORECASE)
 _SYMBOL = re.compile(r"[A-Z]{1,5}")
 _HARD_LIMIT_NOTE = " (hard limit in code: the config may be stricter, never looser)"
@@ -82,6 +84,16 @@ class CostConfig:
 
 
 @dataclass(frozen=True)
+class DataConfig:
+    live_feed: str  # real-time feed for trading decisions ("iex" is the free one)
+    research_feed: str  # feed for backtests; "sip" history is free once 15 minutes old
+    adjustment: str  # corporate-action adjustment, identical for research and live
+    max_missing_minutes: int  # missing 1-minute bars tolerated in a required window
+    max_staleness_seconds: int  # live: oldest acceptable age of the newest bar
+    fetch_attempts: int  # tries per request before the data counts as unavailable
+
+
+@dataclass(frozen=True)
 class DateRange:
     start: dt.date
     end: dt.date  # inclusive
@@ -100,6 +112,7 @@ class Config:
     risk: RiskConfig
     trading: TradingConfig
     costs: CostConfig
+    data: DataConfig
     splits: SplitConfig
 
 
@@ -166,6 +179,15 @@ def parse_config(raw: dict[str, Any], *, today: dt.date | None = None) -> Config
     round_each_fee_up_to_cent = costs.flag("round_each_fee_up_to_cent", when_absent=True)
     costs.reject_unknown_keys()
 
+    data = _Table(raw, "data", problems)
+    live_feed = data.choice("live_feed", _FEEDS)
+    research_feed = data.choice("research_feed", _FEEDS)
+    adjustment = data.choice("adjustment", _ADJUSTMENTS)
+    max_missing_minutes = data.integer("max_missing_minutes", at_least=0, at_most=5)
+    max_staleness_seconds = data.integer("max_staleness_seconds", at_least=10, at_most=300)
+    fetch_attempts = data.integer("fetch_attempts", at_least=1, at_most=5)
+    data.reject_unknown_keys()
+
     splits = _Table(raw, "splits", problems)
     in_sample = splits.date_range("in_sample")
     validation = splits.date_range("validation")
@@ -201,6 +223,14 @@ def parse_config(raw: dict[str, Any], *, today: dt.date | None = None) -> Config
             finra_taf_max_usd=finra_taf_max_usd,
             cat_fee_per_share_usd=cat_fee_per_share_usd,
             round_each_fee_up_to_cent=round_each_fee_up_to_cent,
+        ),
+        data=DataConfig(
+            live_feed=live_feed,
+            research_feed=research_feed,
+            adjustment=adjustment,
+            max_missing_minutes=max_missing_minutes,
+            max_staleness_seconds=max_staleness_seconds,
+            fetch_attempts=fetch_attempts,
         ),
         splits=SplitConfig(in_sample=in_sample, validation=validation, holdout=holdout),
     )
@@ -271,6 +301,14 @@ class _Table:
         value = self._data[key]
         if not isinstance(value, bool):
             return self._problem(key, f"must be true or false (unquoted), got {value!r}")
+        return value
+
+    def choice(self, key: str, choices: tuple[str, ...]) -> str | None:
+        value = self._required(key)
+        if value is _MISSING:
+            return None
+        if value not in choices:
+            return self._problem(key, f"must be one of {', '.join(choices)}, got {value!r}")
         return value
 
     def symbols(self, key: str) -> tuple[str, ...] | None:
