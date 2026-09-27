@@ -13,8 +13,8 @@ the no-change forecast, buy-and-hold, and random entries (see
 | 0 | Edge definition: cost model, breakeven win rate, sample sizes | done |
 | 1 | Project structure, fail-closed config, credentials | done |
 | 2 | Market data with staleness and gap detection | done |
-| 3 | Strategy C, last-half-hour momentum (separate from execution) | next; rules frozen in [docs/decisions.md](docs/decisions.md) |
-| 4 | Backtester: costs, walk-forward, baselines, trial ledger | |
+| 3 | Strategy C, last-half-hour momentum (separate from execution) | done; rules in [docs/decisions.md](docs/decisions.md) |
+| 4 | Backtester: costs, walk-forward, baselines, trial ledger | next |
 | 5 | Risk manager with order veto | |
 | 6 | Execution, Alpaca paper only | |
 | 7 | Logging of signals, orders and fills, with their inputs | |
@@ -30,6 +30,7 @@ pip install -e ".[dev]"
 python -m pytest                     # tests
 python -m baselinetrading.edge       # the cost / breakeven / sample-size arithmetic
 python -m baselinetrading.data_check # needs paper keys: fetches one recent session, both feeds
+python -m baselinetrading.signal_check --date 2021-06-01   # strategy decision + inputs, no orders
 ```
 
 Credentials come **only** from environment variables, and only paper keys
@@ -42,7 +43,10 @@ set -a; source .env; set +a
 
 Only `data_check` (and later the bot) needs the keys; the tests don't.
 
-The Alpaca MCP server (lets an AI assistant trade from chat) is fine for
+AI (a language model) is never in the order path: it can't be backtested
+honestly (it has read the price history, including the holdout), its output
+isn't reproducible, and prompt changes are hidden tuning. It can explain logs
+and write summaries. The Alpaca MCP server (lets an AI assistant trade from chat) is fine for
 read-only inspection of the paper account. It's not part of the bot: orders
 sent through it would bypass the risk manager, the fail-closed checks and the
 logging.
@@ -98,5 +102,7 @@ src/baselinetrading/
   market_data.py            fetch with retries, cache past sessions, holdout lock
   alpaca_client.py          thin alpaca-py adapter (paper trading client only)
   data_check.py             end-to-end data check with your keys
+  strategy.py               strategy C: frozen spec, pure 15:30 decision, stop price
+  signal_check.py           prints one session's decision and its inputs
 tests/                      one test file per module
 ```

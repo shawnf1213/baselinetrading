@@ -84,6 +84,14 @@ class MarketData:
         self._sleep = sleep
         self._holdout_unlocked = holdout_unlocked
 
+    @property
+    def live_feed(self) -> str:
+        return self._data.live_feed
+
+    @property
+    def research_feed(self) -> str:
+        return self._data.research_feed
+
     # --- calendar -----------------------------------------------------------------
 
     def sessions(self, start: dt.date, end: dt.date) -> list[Session]:
