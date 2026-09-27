@@ -1,0 +1,59 @@
+# Settings for baselinetrading, validated by src/baselinetrading/config.py.
+# Anything missing, malformed or unrecognised stops the program before it can
+# trade. API keys never go in this file: they come from environment variables
+# (see README.md), and a key that looks like a credential is rejected.
+#
+# This file is committed on purpose: its git history records every assumption
+# and limit you change, and when.
+
+[account]
+# Position sizing uses min(broker equity, equity_cap_usd). The Alpaca paper
+# account holds ~$100k of play money; this cap makes paper trading behave like
+# the real account.
+equity_cap_usd = 20.0
+# Cash-account rule: money from a sale can't be reused until it settles (T+1
+# for US stocks and ETFs since May 2024). With one position at a time, that
+# allows one full-size round trip per trading day.
+settlement_days = 1
+
+[risk]
+# Hard ceilings in code are 2.0 and 5.0. You can lower these here, not raise them.
+max_risk_per_trade_pct = 2.0
+max_daily_loss_pct = 5.0
+max_entries_per_day = 1
+no_new_entries_minutes_before_close = 15
+flatten_minutes_before_close = 5
+
+[trading]
+# The only switch that lets the bot send orders. If it's missing, the value is
+# false. Turning trading on takes the bare word true (not "true", not 1).
+enabled = false
+symbols = ["SPY"]
+
+[costs]
+# Assumptions checked 2026-09-27. Fee rates change every year: check them
+# against your broker's current fee schedule before trusting a result.
+# Quoted spread in dollars per share: one tick for SPY in normal conditions.
+spread_usd_per_share = 0.01
+# How far the price moves between the decision and the fill, per order. Must be > 0.
+slippage_bps_per_side = 1.0
+# Extra slippage on stop exits: a stop becomes a market order only after the price has passed it.
+stop_extra_slippage_bps = 2.0
+commission_per_order_usd = 0.0
+# SEC Section 31 fee on sale proceeds: $20.60 per $1M from 2026-04-04 (FY2026 rate).
+sec_fee_per_million_usd = 20.60
+# FINRA Trading Activity Fee on shares sold: $0.000195/share in 2026, capped per trade.
+finra_taf_per_share_usd = 0.000195
+finra_taf_max_usd = 9.79
+# Consolidated Audit Trail fee as Alpaca passes it through, on buys and sells.
+cat_fee_per_share_usd = 0.000003
+# Brokers round each of these fees up to the cent, so a $20 sale pays $0.01 on
+# a $0.000006 fee. true is the conservative choice (docs/methodology.md, sec. 1).
+round_each_fee_up_to_cent = true
+
+[splits]
+# Split by date, fixed on 2026-09-27 before any market data was downloaded.
+# Don't read the holdout until the strategy is frozen (see docs/decisions.md).
+in_sample  = { start = 2016-01-04, end = 2020-12-31 }
+validation = { start = 2021-01-01, end = 2022-12-31 }
+holdout    = { start = 2023-01-01, end = 2026-08-31 }
