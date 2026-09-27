@@ -67,13 +67,13 @@ def build_report(config: Config, *, price: float) -> str:
 
     add("2. Cost of one round trip (buy, then sell; exit not by a stop)")
     add(
-        f"   {'position':>13} {'shares':>9} {'spread':>9} {'slippage':>9} {'fees':>9} {'total':>9}"
+        f"   {'position':>18} {'shares':>9} {'spread':>9} {'slippage':>9} {'fees':>9} {'total':>9}"
         f" {'total bp':>9} {'fees/total':>11}"
     )
     for size in sizes:
         cost = round_trip_cost(costs, notional_usd=size, price=price)
         add(
-            f"   {_size_label(size, equity):>13} {size / price:>9.4f} {_usd(cost.spread_usd):>9}"
+            f"   {_size_label(size, equity):>18} {size / price:>9.4f} {_usd(cost.spread_usd):>9}"
             f" {_usd(cost.slippage_usd):>9} {_usd(cost.fees_usd):>9} {_usd(cost.total_usd):>9}"
             f" {cost.total_bps:>9.1f} {cost.fees_usd / cost.total_usd:>11.0%}"
         )
@@ -83,9 +83,9 @@ def build_report(config: Config, *, price: float) -> str:
     add("3. Breakeven win rate = (stop + cost of a loss) / (target - cost of a win + stop + cost of a loss)")
     for multiple in TARGET_MULTIPLES:
         add(f"   target = {multiple:g} x stop (breakeven with zero costs: {1 / (1 + multiple):.1%})")
-        add(f"   {'stop':>8}" + "".join(f"{_size_label(size, equity):>14}" for size in sizes))
+        add(f"   {'stop':>8}" + "".join(f"{_size_label(size, equity):>19}" for size in sizes))
         for stop_pct in STOP_DISTANCES_PCT:
-            cells = "".join(f"{_pct(_breakeven(costs, size, price, stop_pct, multiple)):>14}" for size in sizes)
+            cells = "".join(f"{_pct(_breakeven(costs, size, price, stop_pct, multiple)):>19}" for size in sizes)
             add(f"   {stop_pct:>7.2f}%{cells}")
     add('   "never": the round-trip cost is at least the whole target, so no win rate is profitable.')
     add("")
@@ -99,11 +99,11 @@ def build_report(config: Config, *, price: float) -> str:
         p = _breakeven(costs, size, price, EXAMPLE_STOP_PCT, 1.0)
         label = _size_label(size, equity)
         if math.isinf(p) or p + EDGE_TO_DETECT >= 1:
-            add(f"   {label:>13}: breakeven {_pct(p)}; no room for a {EDGE_TO_DETECT * 100:g}-point edge above it")
+            add(f"   {label:>18}: breakeven {_pct(p)}; no room for a {EDGE_TO_DETECT * 100:g}-point edge above it")
             continue
         n = trades_needed(breakeven=p, true_win_rate=p + EDGE_TO_DETECT)
         add(
-            f"   {label:>13}: breakeven {p:.1%}; a true {p + EDGE_TO_DETECT:.1%} needs ~{n:,} trades "
+            f"   {label:>18}: breakeven {p:.1%}; a true {p + EDGE_TO_DETECT:.1%} needs ~{n:,} trades "
             f"(~{n / TRADING_DAYS_PER_YEAR:.1f} years of trading days)"
         )
     holdout = config.splits.holdout

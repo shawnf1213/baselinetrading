@@ -7,13 +7,14 @@
 # and limit you change, and when.
 
 [account]
-# Position sizing uses min(broker equity, equity_cap_usd). The Alpaca paper
-# account holds ~$100k of play money; this cap makes paper trading behave like
-# the real account.
-equity_cap_usd = 20.0
+# Position sizing uses min(broker equity, equity_cap_usd). Set to the $100k
+# Alpaca paper account (2026-09-27): this project is paper-only. Lower it to
+# simulate a smaller real account; costs and breakevens change with size.
+equity_cap_usd = 100000.0
 # Cash-account rule: money from a sale can't be reused until it settles (T+1
-# for US stocks and ETFs since May 2024). With one position at a time, that
-# allows one full-size round trip per trading day.
+# for US stocks and ETFs since May 2024). The paper account is a margin account
+# and isn't bound by this; we keep it as a conservative cap of one full-size
+# round trip per trading day, and never use leverage.
 settlement_days = 1
 
 [risk]

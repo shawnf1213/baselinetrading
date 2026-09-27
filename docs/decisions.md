@@ -35,6 +35,14 @@ alone costs about 20 bp per round trip (`python -m baselinetrading.edge`).
 have (the fees almost guarantee "no edge"), or set the amount you'd actually
 be willing to fund if the test passes. Reports will show both.
 
+## 2026-09-27: Simulated account size changed to $100,000
+
+You'll test on Alpaca paper only, with the paper account's $100,000.
+`account.equity_cap_usd = 100000.0`. At this size a round trip costs about
+2.4 bp, of which fees are about 9%; slippage is now the main cost, and it is
+an assumption that paper fills can't verify. No leverage: position size stays
+at most the equity. Results at this size say nothing about a $20 account.
+
 ## PENDING: Strategy choice
 
 Fill this in before any strategy backtest:

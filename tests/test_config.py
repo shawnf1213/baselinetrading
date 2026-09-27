@@ -65,7 +65,7 @@ def test_valid_settings_parse():
 def test_committed_settings_file_is_valid_and_ships_with_trading_off():
     config = load_config(DEFAULT_CONFIG_PATH, today=TODAY)
     assert config.trading.enabled is False
-    assert config.account.equity_cap_usd == 20.0
+    assert config.account.equity_cap_usd == 100_000.0
 
 
 def test_missing_file_is_refused(tmp_path):

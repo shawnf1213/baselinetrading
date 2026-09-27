@@ -61,11 +61,10 @@ These can't be switched off in `config/settings.toml`:
 
 ## Constraints that shape the design
 
-- **$20 doesn't cover the costs.** Each regulatory fee is rounded up to the
-  cent on every order, so a $20 round trip costs about 22 bp, and 90% of
-  that is fees. With a 0.5% stop and a target equal to the stop, you'd need
-  to win about 73% of trades just to break even. Run
-  `python -m baselinetrading.edge` for the full table.
+- **Paper only, sized at $100,000.** A round trip costs about 2.4 bp there,
+  mostly assumed slippage. At $20 it would be about 22 bp, 90% of it
+  per-order fee rounding, so results here don't carry over to a tiny
+  account. Run `python -m baselinetrading.edge` for the full table.
 - **Cash-account settlement (T+1)** allows one full-size round trip per
   trading day. The FINRA pattern-day-trader rule was replaced on 2026-06-04,
   but settled-cash rules for cash accounts still apply.
