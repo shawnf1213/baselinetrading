@@ -4,7 +4,8 @@ Every couple of seconds it:
 1. checks live data health (gap-free and fresh over the last 10 minutes);
 2. reconciles positions with the broker (a stop hit, or a position without a stop);
 3. flattens everything when the daily loss limit is hit or at the flatten time;
-4. makes strategy C's one decision per day at 15:30:05-15:30:55 ET;
+4. runs the configured strategy: C's one decision at 15:30:05-15:30:55 ET, or
+   the opening range breakout, checked once a minute from 09:35 to 15:44;
 5. rebuilds the status snapshot the UI shows.
 
 It never places orders itself: entries and exits go through the gateway, and
@@ -14,6 +15,7 @@ so through the risk manager, exactly like a click in the UI.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -24,6 +26,7 @@ from baselinetrading.costs import round_trip_cost
 from baselinetrading.gateway import OrderGateway
 from baselinetrading.journal import summarize
 from baselinetrading.market_data import MarketData
+from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, WAIT, OrbSpec, decide_orb
 from baselinetrading.strategy import BUY, NO_TRADE, SPEC, Decision, StrategySpec, decide_from_data
 
 TICK_SECONDS = 5.0  # ~10 broker reads per tick; Alpaca allows 200 requests a minute
@@ -32,6 +35,7 @@ HEALTH_LOOKBACK = dt.timedelta(minutes=10)
 DECISION_DELAY = dt.timedelta(seconds=5)  # let the 15:29 bar arrive
 DECISION_WINDOW = dt.timedelta(seconds=55)
 STRATEGY_NOTIONAL_FRACTION = 0.98  # full account, leaving room for the price to move before the fill
+BREAKOUTS = ("opening_range_breakout", "adaptive_opening_range_breakout")
 _TIME_OF_DAY = ("market hasn't opened", "no new entries", "market is closed for the day")
 
 
@@ -44,6 +48,8 @@ class Engine:
         symbol: str,
         clock: Callable[[], dt.datetime],
         spec: StrategySpec = SPEC,
+        strategy: str | None = None,
+        orb_spec: OrbSpec = ORB_SPEC,
     ) -> None:
         self.gateway = gateway
         self.data = data
@@ -51,6 +57,14 @@ class Engine:
         self._clock = clock
         self._spec = spec
         self._config = gateway._config
+        self.strategy = strategy or self._config.trading.strategy
+        self._orb_spec = orb_spec
+        self._orb_checked: dt.datetime | None = None  # the minute last evaluated
+        self.watching: str | None = None  # the breakout strategy's latest WAIT reason
+        # The adaptive breakout's memory: every closed strategy trade, oldest first.
+        state_dir = gateway._state_dir
+        self._outcomes_path = state_dir / "adaptive_orb_outcomes.json" if state_dir else None
+        self._outcomes: list[dict] = self._load_outcomes()
         self._sessions: dict[dt.date, Session | None] = {}
         self._calendar_error: str | None = None
         self._last_health: dt.datetime | None = None
@@ -89,7 +103,11 @@ class Engine:
             self._check_health(session, now)
             self.gateway.reconcile()
             self._protective_exits(session, now)
-            self._maybe_decide(session, now)
+            if self.strategy in BREAKOUTS:
+                self._note_outcomes()
+                self._maybe_decide_orb(session, now)
+            else:
+                self._maybe_decide(session, now)
             self.last_error = None
         except Exception as exc:  # broker/API trouble: show it, keep ticking, never trade on it
             self.last_error = f"{type(exc).__name__}: {exc}"
@@ -159,11 +177,79 @@ class Engine:
                 stop_pct=decision.stop_pct, inputs=decision.inputs,
             )
 
-    def _record(self, decision: Decision) -> None:
+    def _maybe_decide_orb(self, session: Session | None, now: dt.datetime) -> None:
+        """Once a minute from 09:35: buy on the bar that just closed above the opening range."""
+        if self.gateway.decided_today or session is None:
+            self.watching = None
+            return
+        spec = self.active_orb_spec()
+        if not session.is_full_day:
+            self._record(Decision(session.date, NO_TRADE, "half day: the strategy doesn't trade"))
+            return
+        if now < spec.at(session, spec.range_end) + DECISION_DELAY:
+            return
+        if now >= spec.at(session, spec.last_entry):
+            reason = self.watching or "no breakout was seen (engine wasn't running or data was unavailable)"
+            self._record(Decision(session.date, NO_TRADE, f"no entry before {spec.last_entry:%H:%M}: {reason}"))
+            return
+        minute = now.replace(second=0, microsecond=0)
+        if self._orb_checked == minute or now - minute < DECISION_DELAY:
+            return
+        self._orb_checked = minute
+        try:
+            bars = self.data.live_minute_bars(self.symbol, session, session.open)
+        except DataUnavailable as exc:  # retried next minute; the status shows why
+            self.watching = f"data unavailable: {exc}"
+            return
+        decision = decide_orb(session, bars, spec)
+        if decision.action == WAIT:
+            self.watching = decision.reason
+            return
+        if decision.action == BUY and decision.entry_at != bars[-1].end:
+            decision = Decision(session.date, NO_TRADE,
+                                f"missed the breakout ({decision.reason}); the engine saw it late", decision.inputs)
+        self.watching = None
+        self._record(decision)
+        if decision.action == BUY:
+            sizing = self.gateway.risk.sizing_equity(self.gateway.context().account)
+            self.gateway.submit_entry(
+                "strategy", self.symbol, notional=sizing * STRATEGY_NOTIONAL_FRACTION,
+                stop_price=decision.stop_price, inputs=decision.inputs,
+            )
+
+    def active_orb_spec(self) -> OrbSpec:
+        """Today's breakout rules; for the adaptive strategy, the range length its loss record gives."""
+        if self.strategy == "adaptive_opening_range_breakout":
+            return ADAPTIVE_ORB_SPEC.day_spec([o["won"] for o in self._outcomes])
+        return self._orb_spec
+
+    def _load_outcomes(self) -> list[dict]:
+        if self._outcomes_path is None or not self._outcomes_path.exists():
+            return []
+        return json.loads(self._outcomes_path.read_text(encoding="utf-8"))
+
+    def _note_outcomes(self) -> None:
+        """Remember each newly closed strategy trade, so the loss streak survives restarts."""
+        seen = {o["entry_time"] for o in self._outcomes}
+        new = [t for t in self.gateway.closed_trades
+               if t.source == "strategy" and t.net_pnl is not None and t.entry_time not in seen]
+        if not new:
+            return
+        self._outcomes += [{"entry_time": t.entry_time, "net_pnl": t.net_pnl, "won": t.net_pnl > 0} for t in new]
+        if self._outcomes_path is not None:
+            self._outcomes_path.parent.mkdir(parents=True, exist_ok=True)
+            self._outcomes_path.write_text(json.dumps(self._outcomes, indent=1), encoding="utf-8")
+
+    def _record(self, decision) -> None:
+        if self.strategy == "adaptive_opening_range_breakout":
+            spec, extra = ADAPTIVE_ORB_SPEC, {"range_minutes": ADAPTIVE_ORB_SPEC.range_minutes(
+                [o["won"] for o in self._outcomes])}
+        else:
+            spec, extra = (self._orb_spec if self.strategy in BREAKOUTS else self._spec), {}
         self.gateway.decided_today = True
         self.gateway.journal.record(
             "signal", "strategy", date=decision.date, action=decision.action, reason=decision.reason,
-            inputs=decision.inputs, spec=self._spec.fingerprint(),
+            inputs=decision.inputs, spec=spec.fingerprint(), strategy=self.strategy, **extra,
         )
 
     # --- what the UI shows ------------------------------------------------------------------
@@ -222,12 +308,21 @@ class Engine:
             cost = round_trip_cost(self._config.costs, notional_usd=sizing * STRATEGY_NOTIONAL_FRACTION, price=price)
             breakeven = {"round_trip_cost_usd": cost.total_usd, "round_trip_cost_bps": cost.total_bps,
                          "notional_usd": cost.notional_usd}
-        entry_time = self._spec.at(session, self._spec.entry_time) if session else None
+        if self.strategy in BREAKOUTS:
+            orb = self.active_orb_spec()
+            entry_time = orb.at(session, orb.range_end) if session else None
+        else:
+            entry_time = self._spec.at(session, self._spec.entry_time) if session else None
         return {
             **base,
             "armed": not bot_reasons,
             "disarmed_reasons": bot_reasons,
             "next_decision": entry_time.isoformat() if entry_time and not gw.decided_today else None,
+            "strategy": self.strategy,
+            "range_minutes": (int((dt.datetime.combine(dt.date.min, self.active_orb_spec().range_end)
+                                   - dt.datetime.combine(dt.date.min, self.active_orb_spec().range_start))
+                                  .total_seconds() // 60) if self.strategy in BREAKOUTS else None),
+            "watching": self.watching if not gw.decided_today else None,
             "entry": {"enabled": not blockers, "reasons": blockers},
             "data": {"ok": ctx.data_ok, "reason": ctx.data_reason, "price": ctx.reference_price,
                      "last_bar_end": gw.health.last_bar_end.isoformat() if gw.health.last_bar_end else None,

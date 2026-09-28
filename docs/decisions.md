@@ -80,4 +80,60 @@ fire only on unusual days.
 **Abandon if:** mean net P&L per trade on validation is <= 0, or it fails any
 of the three baselines on validation. No retuning afterwards.
 
+## 2026-09-28: Strategy A, opening range breakout, frozen before any backtest
+
+Chosen by you after strategy C, because you want the bot watching the whole
+day rather than making one decision at 15:30. Spec fingerprint
+`261a98ff001fa7ff`; selected with `trading.strategy = "opening_range_breakout"`.
+
+**Mechanism** (from `docs/strategies.md`, still to be restated in your own
+words): overnight news and order imbalances get priced at the open. A close
+out of the opening range suggests the imbalance hasn't been absorbed, and
+large orders worked through the day by execution algorithms keep pushing the
+same way. The counterparty is whoever fades the move.
+
+**Rules** (all times ET; decisions use only bars that have closed):
+1. Trade only on full sessions. Skip half days.
+2. Opening range: high and low of the 09:30-09:34 bars.
+3. Breakout: the first 1-minute bar from 09:35 whose close is above the range
+   high. Long-only. At most one entry per day.
+4. Entry: market buy for the full account at the next bar's open. The last
+   usable breakout bar is 15:43, so the entry comes before 15:45 (the risk
+   manager's no-new-entries window). Live, the engine enters only on the
+   minute the breakout bar closes; if it saw the breakout late, no trade.
+5. Stop: the range low, placed as soon as the entry fills. Backtest fill rule
+   as for strategy C.
+6. Exit: market sell at 15:55. No profit target.
+7. Data: every bar from 09:30 must be gap-free and fresh. Otherwise no entry.
+
+**Parameters:** range 5 minutes, entry on a close, stop at the range low, exit
+15:55, no target, as pre-committed in `docs/strategies.md`. Not tuned.
+
+**Baseline B3 for this strategy:** the same trade entered at the 09:35 open
+every day (same stop and exit), whether or not a breakout came.
+
+**Abandon if:** mean net P&L per trade on validation is <= 0, or it fails any
+of the three baselines on validation. No retuning afterwards.
+
+## 2026-09-28: Strategy A2, adaptive opening range breakout, frozen before any backtest
+
+Strategy A failed in-sample (win rate 29.6% against a 32.7% breakeven; mean
+net -2.27 bp per trade). You asked for the strategy to change slightly after
+every 3 losses. Hand-tweaking after each streak would chase noise, so the
+adapting rule itself is frozen here and tested as one new strategy. Spec
+fingerprint `da212df8e0cbc847`; selected with
+`trading.strategy = "adaptive_opening_range_breakout"`.
+
+**Rules:** strategy A's rules, except the opening range length. It starts at 5
+minutes. After 3 losing trades in a row (net of costs), it moves to the next
+length in 5 -> 15 -> 30 minutes, then back to 5. A win resets the streak and
+keeps the current length. Live, every closed strategy trade is saved to
+`state/adaptive_orb_outcomes.json`, so a restart keeps the streak. The
+backtest replays days in order with the same rule.
+
+**Parameters:** ladder (5, 15, 30) and 3 losses, as proposed in the thread and
+accepted. Not tuned. This is the third distinct spec (trial count 3).
+
+**Abandon if:** as for A and C.
+
 ## Tuned-parameter trial count: 0

@@ -35,6 +35,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "settings
 _SECTIONS = ("account", "risk", "trading", "costs", "data", "splits")
 _FEEDS = ("iex", "sip")
 _ADJUSTMENTS = ("raw", "split", "dividend", "all")
+STRATEGIES = ("last_half_hour", "opening_range_breakout", "adaptive_opening_range_breakout")
 _SECRET_LIKE = re.compile(r"secret|passw|token|api_?key|key_?id", re.IGNORECASE)
 _SYMBOL = re.compile(r"[A-Z]{1,5}")
 _HARD_LIMIT_NOTE = " (hard limit in code: the config may be stricter, never looser)"
@@ -68,6 +69,7 @@ class RiskConfig:
 class TradingConfig:
     enabled: bool  # the only switch that allows orders; absent means False
     symbols: tuple[str, ...]  # allowlist: orders for anything else are vetoed
+    strategy: str  # which frozen strategy the engine runs (docs/decisions.md)
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,7 @@ def parse_config(raw: dict[str, Any], *, today: dt.date | None = None) -> Config
     trading = _Table(raw, "trading", problems)
     enabled = trading.flag("enabled", when_absent=False)
     symbols = trading.symbols("symbols")
+    strategy = trading.choice("strategy", STRATEGIES)
     trading.reject_unknown_keys()
 
     costs = _Table(raw, "costs", problems)
@@ -212,7 +215,7 @@ def parse_config(raw: dict[str, Any], *, today: dt.date | None = None) -> Config
             no_new_entries_minutes_before_close=no_new_entries,
             flatten_minutes_before_close=flatten,
         ),
-        trading=TradingConfig(enabled=enabled, symbols=symbols),
+        trading=TradingConfig(enabled=enabled, symbols=symbols, strategy=strategy),
         costs=CostConfig(
             spread_usd_per_share=spread_usd_per_share,
             slippage_bps_per_side=slippage_bps_per_side,

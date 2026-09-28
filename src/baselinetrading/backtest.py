@@ -1,4 +1,4 @@
-"""Walk-forward backtest of strategy C, net of costs, against the three baselines.
+"""Walk-forward backtest of the configured strategy, net of costs, against the three baselines.
 
     python -m baselinetrading.backtest --split in_sample
     python -m baselinetrading.backtest --split validation
@@ -14,6 +14,14 @@ time. Fills:
           bar's open (a gap fills worse). If a bar touches both, the stop wins;
   exit  = open of the 15:55 bar otherwise.
 Costs come from costs.round_trip_cost() at the configured position size.
+
+For the opening range breakout (strategy A) each day is decided by
+orb.decide_orb(), again the live function: entry = open of the bar after the
+first close above the 09:30-09:35 high, stop = the range low (same fill rule),
+exit = open of the 15:55 bar. Its "always long" trade for baseline B3 enters
+at the 09:35 open with the same stop and exit, whether or not a breakout came.
+The adaptive breakout replays days in order and gives each day the range
+length that its own simulated trades so far imply (orb.AdaptiveOrbSpec).
 
 Every run is appended to results/trials.jsonl (commit it). The report's
 significance level is Šidák-corrected for the number of distinct strategy
@@ -37,6 +45,7 @@ from baselinetrading.config import DEFAULT_CONFIG_PATH, Config, ConfigError, loa
 from baselinetrading.costs import BPS, breakeven_win_rate, round_trip_cost
 from baselinetrading.market_data import MarketData
 from baselinetrading.stats import compare_to_breakeven, trades_needed
+from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, decide_orb
 from baselinetrading.strategy import BUY, SPEC, StrategySpec, decide_entry
 
 RESULTS_DIR = DEFAULT_CONFIG_PATH.parents[1] / "results"
@@ -85,6 +94,28 @@ def simulate_trade(
     return SimTrade(session.date, entry, exit_price, reason, notional, (exit_price / entry - 1) * BPS, cost.total_bps)
 
 
+def simulate_long(session: Session, bars: tuple[Bar, ...], entry_at: dt.datetime, stop: float,
+                  exit_at: dt.datetime, config: Config) -> SimTrade:
+    """Long from the open of the bar at entry_at to the open of the bar at exit_at, with an absolute stop.
+
+    A stop at or above the entry can't be placed; the live gateway closes such
+    a position at once, so it's simulated as an immediate exit at the entry.
+    """
+    by_start = {b.start: b for b in bars}
+    entry = by_start[entry_at].open
+    notional = config.account.equity_cap_usd * NOTIONAL_FRACTION
+    exit_price, reason = by_start[exit_at].open, "time"
+    if stop >= entry:
+        exit_price, reason = entry, "unprotected"
+    else:
+        for bar in sorted(bars, key=lambda b: b.start):
+            if entry_at <= bar.start < exit_at and bar.low <= stop:
+                exit_price, reason = min(stop, bar.open), "stop"
+                break
+    cost = round_trip_cost(config.costs, notional_usd=notional, price=entry, exit_by_stop=reason == "stop")
+    return SimTrade(session.date, entry, exit_price, reason, notional, (exit_price / entry - 1) * BPS, cost.total_bps)
+
+
 @dataclass
 class DayResult:
     date: dt.date
@@ -99,16 +130,54 @@ class DayResult:
 
 
 def run_days(data: MarketData, config: Config, symbol: str, start: dt.date, end: dt.date,
-             spec: StrategySpec = SPEC, feed: str | None = None) -> list[DayResult]:
+             spec: StrategySpec = SPEC, feed: str | None = None, strategy: str = "last_half_hour") -> list[DayResult]:
     feed = feed or data.research_feed
     sessions = data.sessions(start, end)
     closes = data.daily_closes(symbol, start - dt.timedelta(days=10), end)
     calendar = data.sessions(start - dt.timedelta(days=10), start - dt.timedelta(days=1)) + sessions
     previous = {s.date: calendar[i - 1].date for i, s in enumerate(calendar) if i > 0}
     results = []
+    outcomes: list[bool] = []  # the adaptive breakout's trade record so far, oldest first
     for session in sessions:
-        results.append(_one_day(data, config, symbol, session, closes.get(previous.get(session.date)), spec, feed))
+        if strategy == "adaptive_opening_range_breakout":
+            day = _one_day_orb(data, config, symbol, session, feed, ADAPTIVE_ORB_SPEC.day_spec(outcomes))
+            if day.trade:
+                outcomes.append(day.trade.net_bps > 0)
+            results.append(day)
+        elif strategy == "opening_range_breakout":
+            results.append(_one_day_orb(data, config, symbol, session, feed))
+        else:
+            results.append(_one_day(data, config, symbol, session, closes.get(previous.get(session.date)), spec, feed))
     return results
+
+
+def _one_day_orb(data, config, symbol, session, feed, spec=ORB_SPEC) -> DayResult:
+    def skip(reason: str) -> DayResult:
+        return DayResult(session.date, "SKIP", reason, None, None, None, None, None, None)
+
+    if not session.is_full_day:
+        return skip("half day")
+    try:
+        bars = data.minute_bars(symbol, session, session.open, session.close, feed=feed)
+    except DataUnavailable as exc:
+        return skip(f"data unavailable: {exc}")
+    decision = decide_orb(session, bars, spec)
+    if decision.action not in (BUY, "NO_TRADE"):
+        return skip(f"undecided: {decision.reason}")
+    if decision.inputs is None:
+        return skip(decision.reason)
+    exit_at = spec.at(session, spec.exit_time)
+    range_end = spec.at(session, spec.range_end)
+    always = simulate_long(session, bars, range_end, decision.inputs.range_low, exit_at, config)
+    trade, forward = None, None
+    if decision.action == BUY:
+        trade = simulate_long(session, bars, decision.entry_at, decision.stop_price, exit_at, config)
+        index = next(i for i, b in enumerate(bars) if b.start == decision.entry_at)
+        last = next(i for i, b in enumerate(bars) if b.start == exit_at)
+        forward = {m: (bars[min(index + m - 1, last)].close / trade.entry - 1) * BPS for m in FORWARD_MINUTES}
+    close_price = next(b.close for b in bars if b.start == exit_at)
+    return DayResult(session.date, decision.action, decision.reason, None, trade, always, forward,
+                     bars[0].open, close_price)
 
 
 def _one_day(data, config, symbol, session, previous_close, spec, feed) -> DayResult:
@@ -153,7 +222,7 @@ def bootstrap_mean_ci(values: list[float], rng: random.Random, runs: int = BOOTS
 
 
 def report(days: list[DayResult], closes: dict[dt.date, float], config: Config, *, split: str, trials: int,
-           spec: StrategySpec = SPEC, feed: str = "sip") -> str:
+           spec=SPEC, feed: str = "sip") -> str:
     rng = random.Random(SEED)
     trades = [d.trade for d in days if d.trade]
     eligible = [d for d in days if d.always_long]
@@ -162,7 +231,7 @@ def report(days: list[DayResult], closes: dict[dt.date, float], config: Config, 
     confidence = 1 - alpha
     lines = []
     add = lines.append
-    add(f"BACKTEST: strategy C ({spec.fingerprint()}) on {split}, feed {feed}, ${config.account.equity_cap_usd:,.0f} account")
+    add(f"BACKTEST: {spec.name} ({spec.fingerprint()}) on {split}, feed {feed}, ${config.account.equity_cap_usd:,.0f} account")
 
     # Breakeven first, always.
     if trades:
@@ -213,7 +282,7 @@ def report(days: list[DayResult], closes: dict[dt.date, float], config: Config, 
     add("")
 
     # B1: the no-change forecast.
-    add("B1. No-change forecast: do signal days move up after 15:30 more than zero?")
+    add("B1. No-change forecast: do signal days move up after the entry more than zero?")
     buy_days = [d for d in days if d.trade]
     for m in FORWARD_MINUTES:
         values = [d.forward_bps[m] for d in buy_days]
@@ -232,8 +301,14 @@ def report(days: list[DayResult], closes: dict[dt.date, float], config: Config, 
     in_range = sorted(k for k in closes if dates[0] <= k <= dates[-1])
     earlier = sorted(k for k in closes if k < dates[0])
     b2 = False
-    if in_range and earlier:
-        start_close, end_close = closes[earlier[-1]], closes[in_range[-1]]
+    # Buy at the previous session's close; if the data starts on the first day (Alpaca's SIP
+    # history begins 2016-01-04), buy at that day's open instead.
+    first_open = next((d.open_price for d in sorted(days, key=lambda d: d.date) if d.open_price), None)
+    start_close = closes[earlier[-1]] if earlier else first_open
+    if in_range and start_close:
+        if not earlier:
+            add(f"   no close before {dates[0]}: buy-and-hold starts at that day's open, {start_close:.2f}")
+        end_close = closes[in_range[-1]]
         bh_cost = round_trip_cost(config.costs, notional_usd=config.account.equity_cap_usd * NOTIONAL_FRACTION, price=start_close)
         bh = (end_close / start_close - 1) - bh_cost.total_bps / BPS
         strat = total_net / (config.account.equity_cap_usd * NOTIONAL_FRACTION)
@@ -283,8 +358,13 @@ def append_ledger(path: Path, entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
+def spec_for(strategy: str):
+    """The frozen spec of a strategy named in settings.toml."""
+    return {"opening_range_breakout": ORB_SPEC, "adaptive_opening_range_breakout": ADAPTIVE_ORB_SPEC}.get(strategy, SPEC)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Backtest strategy C on one pre-committed split.")
+    parser = argparse.ArgumentParser(description="Backtest the configured strategy on one pre-committed split.")
     parser.add_argument("--split", choices=("in_sample", "validation", "holdout"), required=True)
     parser.add_argument("--feed", choices=("sip", "iex"), help="default: the research feed from settings")
     parser.add_argument("--unlock-holdout", metavar="FINGERPRINT", help="the frozen spec's fingerprint")
@@ -297,7 +377,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 2
-    fingerprint = SPEC.fingerprint()
+    strategy = config.trading.strategy
+    spec = spec_for(strategy)
+    fingerprint = spec.fingerprint()
     path = ledger_path()
     ledger = read_ledger(path)
     if args.split == "holdout":
@@ -319,17 +401,17 @@ def main(argv: list[str] | None = None) -> int:
     feed = args.feed or config.data.research_feed
     symbol = config.trading.symbols[0]
     try:
-        days = run_days(data, config, symbol, period.start, period.end, feed=feed)
+        days = run_days(data, config, symbol, period.start, period.end, feed=feed, strategy=strategy)
         closes = data.daily_closes(symbol, period.start - dt.timedelta(days=10), period.end)
     except DataUnavailable as exc:
         print(f"DATA UNAVAILABLE: {exc}", file=sys.stderr)
         return 1
     trials = len({e["spec"] for e in ledger} | {fingerprint})
-    text = report(days, closes, config, split=args.split, trials=trials, feed=feed)
+    text = report(days, closes, config, split=args.split, trials=trials, spec=spec, feed=feed)
     print(text)
     trades = [d.trade for d in days if d.trade]
     append_ledger(path, {
-        "ts": dt.datetime.now(ET).isoformat(), "spec": fingerprint, "split": args.split, "feed": feed,
+        "ts": dt.datetime.now(ET).isoformat(), "spec": fingerprint, "strategy": strategy, "split": args.split, "feed": feed,
         "trades": len(trades), "mean_net_bps": statistics.fmean(t.net_bps for t in trades) if trades else None,
     })
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

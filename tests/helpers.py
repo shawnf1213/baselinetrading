@@ -14,11 +14,11 @@ TODAY = dt.date(2026, 9, 28)
 SESSION = session(TODAY)
 
 
-def config(enabled=True, **risk_changes):
+def config(enabled=True, strategy="last_half_hour", **risk_changes):
     base = load_config(DEFAULT_CONFIG_PATH, today=TODAY)
     return dataclasses.replace(
         base,
-        trading=dataclasses.replace(base.trading, enabled=enabled),
+        trading=dataclasses.replace(base.trading, enabled=enabled, strategy=strategy),
         risk=dataclasses.replace(base.risk, **risk_changes),
     )
 

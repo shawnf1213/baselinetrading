@@ -160,6 +160,19 @@ def test_the_holdout_needs_the_fingerprint_and_runs_once(tmp_path, monkeypatch, 
     monkeypatch.setattr(backtest, "RESULTS_DIR", tmp_path)
     assert backtest.main(["--split", "holdout"]) == 2
     assert "needs --unlock-holdout" in capsys.readouterr().err
-    backtest.append_ledger(tmp_path / "trials.jsonl", {"spec": backtest.SPEC.fingerprint(), "split": "holdout"})
-    assert backtest.main(["--split", "holdout", "--unlock-holdout", backtest.SPEC.fingerprint()]) == 2
+    fingerprint = backtest.spec_for(CONFIG.trading.strategy).fingerprint()
+    backtest.append_ledger(tmp_path / "trials.jsonl", {"spec": fingerprint, "split": "holdout"})
+    assert backtest.main(["--split", "holdout", "--unlock-holdout", fingerprint]) == 2
     assert "already been run on the holdout" in capsys.readouterr().err
+
+
+def test_buy_and_hold_starts_at_the_first_open_when_no_earlier_close_exists(tmp_path):
+    results, _ = run(tmp_path, works=True)
+    first = min(d.date for d in results)
+    days = weekdays(dt.date(2019, 1, 7), 160)
+    data = MarketData(PathFetcher(days, True), CONFIG, cache_dir=tmp_path,
+                      now=lambda: dt.datetime(2026, 9, 28, 12, tzinfo=ET), sleep=lambda s: None)
+    closes = {k: v for k, v in data.daily_closes("SPY", days[0].date, days[-1].date).items() if k >= first}
+    text = report(results, closes, CONFIG, split="in_sample", trials=1)
+    assert "not enough daily closes" not in text
+    assert f"no close before {first}" in text and "(a) close-to-close buy-and-hold" in text

@@ -1,0 +1,28 @@
+BACKTEST: opening-range-breakout-5m (261a98ff001fa7ff) on in_sample, feed sip, $100,000 account
+BREAKEVEN WIN RATE: 32.7%  (avg net win 49.00 bp, avg net loss 23.79 bp; costs 3.97 bp per round trip)
+Trials so far (distinct specs): 1; significance level 0.0500 (Šidák), confidence 95.00%
+
+Days: 1259   trades: 1052   no-trade: 190   skipped: 17
+   skipped, data unavailable: 6
+   skipped, half day: 11
+Stop exits: 693
+
+Strategy, net of costs
+   win rate 29.6% (311/1052), 95% CI 26.9%-32.4%; breakeven 32.7% -> BELOW breakeven
+   mean net per trade -2.27 bp, 95% bootstrap CI -5.00 to +0.65 bp
+   mean gross per trade +1.70 bp
+   total net P&L $-23,412.23 (-23.41% of the account, no compounding)
+
+B1. No-change forecast: do signal days move up after the entry more than zero?
+   + 1 min: mean +0.16 bp (95% CI -0.15 to +0.48)
+   + 5 min: mean +0.20 bp (95% CI -0.54 to +0.94)
+   +15 min: mean -1.02 bp (95% CI -2.27 to +0.14)
+   to exit: gross +1.70 bp (CI -1.00 to +4.65); net CI includes zero -> FAIL
+
+B2. Buy-and-hold over the same period
+   not enough daily closes to compute
+
+B3. Random entries: the same trade on randomly chosen days (same count, size, hold, costs)
+   always-long mean -3.88 bp over 1242 days; p = 0.0005 vs level 0.0500 -> PASS
+
+EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 pass)

@@ -28,8 +28,14 @@ flatten_minutes_before_close = 5
 [trading]
 # The only switch that lets the bot send orders. If it's missing, the value is
 # false. Turning trading on takes the bare word true (not "true", not 1).
-enabled = false
+enabled = true
 symbols = ["SPY"]
+# Which frozen strategy the engine runs (rules in docs/decisions.md):
+# "last_half_hour" (C: one decision at 15:30) or "opening_range_breakout"
+# (A: watches all day from 09:35 for a breakout of the 09:30-09:35 range), or
+# "adaptive_opening_range_breakout" (A2: A, with the range stepping 5 -> 15 ->
+# 30 minutes after every 3 losses in a row).
+strategy = "adaptive_opening_range_breakout"
 
 [costs]
 # Assumptions checked 2026-09-27. Fee rates change every year: check them
