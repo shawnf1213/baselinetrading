@@ -37,6 +37,10 @@ symbols = ["SPY", "AAPL", "NVDA", "AMD", "MSFT", "TSLA", "META", "AMZN"]
 # "adaptive_opening_range_breakout" (A2: A, with the range stepping 5 -> 15 ->
 # 30 minutes after every 3 losses in a row).
 strategy = "adaptive_opening_range_breakout"
+# What a breakout buys: "shares" (sized to the symbol's share of the account) or
+# "options" (calls about a week out, first strike at or above the price, premium
+# at most max_risk_per_trade_pct of equity; the bot sells them on the stock's stop).
+instrument = "options"
 
 [costs]
 # Assumptions checked 2026-09-27. Fee rates change every year: check them

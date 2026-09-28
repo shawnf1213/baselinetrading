@@ -27,7 +27,8 @@ from baselinetrading.broker import Broker, OrderSnapshot, floor_qty
 from baselinetrading.config import Config
 from baselinetrading.costs import round_trip_cost
 from baselinetrading.journal import Journal, Trade
-from baselinetrading.risk import EntryOrder, ExitOrder, KillOrder, RiskContext, RiskManager
+from baselinetrading.options import MULTIPLIER, OPTION_SPEC, OptionSpec, choose_call, contracts_for, is_option, underlying_of
+from baselinetrading.risk import EntryOrder, ExitOrder, KillOrder, OptionEntryOrder, RiskContext, RiskManager
 
 FILL_TIMEOUT_SECONDS = 15.0
 STOP_ATTEMPTS = 3
@@ -202,6 +203,69 @@ class OrderGateway:
         self._close_everything(order.source, "stop could not be placed", order.symbol)
         return Outcome(False, "stop could not be placed; position closed")
 
+    def submit_option_entry(self, source: str, underlying: str, *, stop_underlying: float, budget_usd: float,
+                            inputs: Any = None, spec: OptionSpec = OPTION_SPEC) -> Outcome:
+        """Buy calls on `underlying` for up to budget_usd of premium; the engine manages the stop on the stock."""
+        with self.lock:
+            ctx = self.context(underlying)
+            price = ctx.reference_price
+            today = self._clock().astimezone(ET).date()
+            try:
+                contract = None
+                if price:
+                    contracts = self._broker.option_contracts(
+                        underlying, today + dt.timedelta(days=spec.min_days), today + dt.timedelta(days=spec.max_days))
+                    contract = choose_call(contracts, price, today, spec)
+                if contract is None:
+                    self.journal.record("veto", source, symbol=underlying, reasons=[f"no call on {underlying} "
+                                        f"{spec.min_days}-{spec.max_days} days out at or above {price}"])
+                    return Outcome(False, f"no suitable call on {underlying}")
+                bid, ask = self._broker.option_quote(contract.symbol)
+            except Exception as exc:
+                self.journal.record("error", source, where="option lookup", error=f"{type(exc).__name__}: {exc}")
+                return Outcome(False, f"option lookup failed: {exc}")
+            qty = contracts_for(budget_usd, ask)
+            order = OptionEntryOrder(source, underlying, contract.symbol, float(qty), bid, ask,
+                                     math.floor(stop_underlying * 100) / 100, spec.max_spread_pct)
+            self.journal.record("order_request", source, symbol=contract.symbol, underlying=underlying, side="buy",
+                                qty=qty, bid=bid, ask=ask, stop_underlying=order.stop_underlying,
+                                reference_price=price, inputs=inputs, option_spec=spec.fingerprint())
+            try:
+                execution = self.risk.execute(order, ctx, lambda: self._enter_option(order))
+            except Exception as exc:
+                self.journal.record("error", source, where="option entry", error=f"{type(exc).__name__}: {exc}")
+                return Outcome(False, f"option entry failed: {exc}")
+            if not execution.verdict.approved:
+                self.journal.record("veto", source, symbol=contract.symbol, reasons=execution.verdict.reasons)
+                return Outcome(False, "vetoed by the risk manager", execution.verdict.reasons)
+            self.journal.record("risk_approved", source, symbol=contract.symbol, metrics=execution.verdict.metrics)
+            return execution.result
+
+    def _enter_option(self, order: OptionEntryOrder) -> Outcome:
+        client_id = f"{order.source}-{uuid.uuid4().hex[:12]}"
+        self.entries_today += 1
+        submitted = self._broker.submit_market(order.contract, "buy", order.qty, client_id)
+        self.journal.record("order_submitted", order.source, order_id=submitted.id, client_order_id=client_id,
+                            symbol=order.contract, underlying=order.underlying, side="buy", qty=order.qty)
+        filled = self._wait_for_fill(submitted)
+        if filled.is_open:
+            self._broker.cancel_order(filled.id)
+            filled = self._broker.get_order(filled.id)
+        if filled.filled_qty <= 0 or filled.filled_avg_price is None:
+            self.journal.record("entry_unfilled", order.source, order_id=filled.id, status=filled.status)
+            return Outcome(False, f"option order {filled.status} with nothing filled")
+        qty, entry = filled.filled_qty, filled.filled_avg_price
+        self.journal.record("fill", order.source, order_id=filled.id, side="buy", qty=qty, price=entry,
+                            symbol=order.contract, partial=qty < order.qty)
+        cost = (order.ask - order.bid) * qty * MULTIPLIER  # modelled: pay the quoted spread once per round trip
+        trade = Trade(order.source, order.contract, qty, entry, self._clock().isoformat(), None, None, cost,
+                      underlying=order.underlying, stop_underlying=order.stop_underlying, multiplier=MULTIPLIER)
+        self.open_trades[order.underlying] = trade
+        self._persist_trade("trade_opened", trade)
+        return Outcome(True, f"bought {qty:g} {order.contract} at {entry:.2f}; sells if {order.underlying} "
+                             f"trades at or below {order.stop_underlying:.2f}",
+                       details={"qty": qty, "entry": entry, "contract": order.contract})
+
     def _wait_for_fill(self, order: OrderSnapshot) -> OrderSnapshot:
         deadline = time.monotonic() + self._fill_timeout
         while order.is_open and time.monotonic() < deadline:
@@ -256,11 +320,11 @@ class OrderGateway:
             self._broker.cancel_all()
         else:
             for order in self._broker.open_orders():
-                if order.symbol == symbol:
+                if underlying_of(order.symbol) == symbol:
                     self._broker.cancel_order(order.id)
         closed = []
         for position in self._broker.positions():
-            if symbol is not None and position.symbol != symbol:
+            if symbol is not None and underlying_of(position.symbol) != symbol:
                 continue
             order = self._broker.close_position(position.symbol)
             if order is not None:
@@ -270,8 +334,9 @@ class OrderGateway:
                 price = None
             closed.append(position.symbol)
             self.journal.record("exit", source, symbol=position.symbol, qty=position.qty, price=price, reason=reason)
-            if position.symbol in self.open_trades:
-                self._finish_trade(position.symbol, price if price is not None else position.current_price, reason)
+            key = underlying_of(position.symbol)
+            if key in self.open_trades and self.open_trades[key].symbol == position.symbol:
+                self._finish_trade(key, price if price is not None else position.current_price, reason)
         message = f"closed {', '.join(closed)}" if closed else "no positions to close"
         return Outcome(True, message, details={"reason": reason})
 
@@ -290,9 +355,18 @@ class OrderGateway:
                     if stop.status == "filled":
                         price, reason = stop.filled_avg_price, "stop hit"
                 self.journal.record("exit", trade.source, symbol=trade.symbol, qty=trade.qty, price=price, reason=reason)
-                self._finish_trade(trade.symbol, price if price is not None else trade.entry_price, reason)
+                self._finish_trade(trade.key, price if price is not None else trade.entry_price, reason)
             open_orders = self._broker.open_orders()
             for symbol, position in positions.items():
+                if is_option(symbol):
+                    # Alpaca takes no stop orders on options: the engine sells on the stock's stop. An option
+                    # the app didn't open has no such stop, so it's closed like any unprotected position.
+                    trade = self.open_trades.get(underlying_of(symbol))
+                    if trade and trade.symbol == symbol and trade.stop_underlying:
+                        continue
+                    self.journal.record("unprotected", "system", symbol=symbol, qty=position.qty, stop_qty=0)
+                    self.exit_all("system", f"{symbol} option position without a managed stop")
+                    return
                 covered = sum(o.qty for o in open_orders if o.symbol == symbol and o.side == "sell" and o.type == "stop")
                 if covered + 1e-9 < position.qty:
                     self.journal.record("unprotected", "system", symbol=symbol, qty=position.qty, stop_qty=covered)
@@ -334,7 +408,7 @@ class OrderGateway:
                     opened.pop(trade.entry_time, None)
                     self.closed_trades.append(trade)
         for trade in opened.values():
-            self.open_trades[trade.symbol] = trade
+            self.open_trades[trade.key] = trade
 
     def _roll_day(self) -> None:
         today = self._today()

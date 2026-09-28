@@ -111,7 +111,10 @@ class AlpacaBroker:
     def __init__(self, credentials: Credentials) -> None:
         from alpaca.trading.client import TradingClient
 
+        from alpaca.data.historical.option import OptionHistoricalDataClient
+
         self._client = TradingClient(credentials.key_id.reveal(), credentials.secret_key.reveal(), paper=True)
+        self._options = OptionHistoricalDataClient(credentials.key_id.reveal(), credentials.secret_key.reveal())
         account = self.account()
         if not account.is_paper:
             raise BrokerError(f"account {account.account_number} is not a paper account; refusing to start")
@@ -147,6 +150,31 @@ class AlpacaBroker:
 
     def get_order(self, order_id: str) -> OrderSnapshot:
         return _order(self._client.get_order_by_id(order_id))
+
+    def option_contracts(self, underlying: str, expires_from: dt.date, expires_to: dt.date) -> list:
+        """Tradable call contracts on `underlying` expiring in [expires_from, expires_to]. Read-only."""
+        from alpaca.trading.requests import GetOptionContractsRequest
+
+        from baselinetrading.options import Contract
+
+        out, token = [], None
+        while True:
+            page = self._client.get_option_contracts(GetOptionContractsRequest(
+                underlying_symbols=[underlying], type="call", expiration_date_gte=expires_from,
+                expiration_date_lte=expires_to, limit=1000, page_token=token,
+            ))
+            out += [Contract(c.symbol, c.expiration_date, float(c.strike_price))
+                    for c in page.option_contracts or [] if c.tradable]
+            token = page.next_page_token
+            if not token:
+                return out
+
+    def option_quote(self, symbol: str) -> tuple[float, float]:
+        """Latest (bid, ask) for an option contract. Read-only."""
+        from alpaca.data.requests import OptionLatestQuoteRequest
+
+        quote = self._options.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=symbol))[symbol]
+        return float(quote.bid_price), float(quote.ask_price)
 
     @requires_risk_manager
     def submit_market(self, symbol: str, side: str, qty: float, client_order_id: str) -> OrderSnapshot:

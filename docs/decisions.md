@@ -180,4 +180,25 @@ Fingerprints: A v3 `1903aa2a5f90d8bc`, A2 v3 `4fb0f5c98c9ebd4a` (live).
 Switched live at 11:25 ET on 2026-09-28, before its backtest finished, at
 your request ("fix it"): paper money only.
 
+## 2026-09-28: Breakouts traded with call options
+
+You want to day trade options, not shares, built and live at once. Selected
+with `trading.instrument = "options"`; spec `breakout-calls-weekly`
+(`options.OptionSpec`).
+
+**Rules:** the signal is unchanged (breakout v3 on each stock). On a BUY the
+bot buys calls instead of shares: the earliest expiry 5-12 calendar days out,
+and in it the lowest strike at or above the stock price. Whole contracts, as
+many as fit in min(2% of equity, the stock's share), so the most a trade can
+lose is its premium. Skip if the bid-ask spread is wider than 15% of the ask.
+Alpaca takes no stop orders on options: the engine sells the calls when the
+stock's latest 1-minute close is at or below the breakout stop (the range low,
+checked about every 15 seconds), and everything is sold at 15:55 as before.
+If the backend stops, nothing protects an open call.
+
+**Not backtested.** Alpaca's option history starts in February 2024, inside
+the stock strategies' locked holdout, and the free plan has no historical
+option quotes for spreads. Live paper trading from 2026-09-28 is the test;
+every fill is journaled with the quote it was taken at.
+
 ## Tuned-parameter trial count: 0

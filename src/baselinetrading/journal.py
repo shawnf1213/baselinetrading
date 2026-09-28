@@ -36,10 +36,18 @@ class Trade:
     exit_price: float | None = None
     exit_time: str | None = None
     exit_reason: str | None = None
+    underlying: str | None = None  # options: the stock the contract is on (the trade's key in the gateway)
+    stop_underlying: float | None = None  # options: the bot sells when the stock trades at or below this
+    multiplier: float = 1.0  # options: 100 shares per contract
+
+    @property
+    def key(self) -> str:
+        """The symbol this trade occupies: the stock, whether held as shares or as an option on it."""
+        return self.underlying or self.symbol
 
     @property
     def gross_pnl(self) -> float | None:
-        return None if self.exit_price is None else (self.exit_price - self.entry_price) * self.qty
+        return None if self.exit_price is None else (self.exit_price - self.entry_price) * self.qty * self.multiplier
 
     @property
     def net_pnl(self) -> float | None:

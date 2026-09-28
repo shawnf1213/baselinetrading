@@ -14,13 +14,14 @@ TODAY = dt.date(2026, 9, 28)
 SESSION = session(TODAY)
 
 
-def config(enabled=True, strategy="last_half_hour", symbols=("SPY",), **risk_changes):
+def config(enabled=True, strategy="last_half_hour", symbols=("SPY",), instrument="shares", **risk_changes):
     """The committed settings, pinned to one symbol and one entry a day unless a test says otherwise."""
     base = load_config(DEFAULT_CONFIG_PATH, today=TODAY)
     risk_changes.setdefault("max_entries_per_day", 1)
     return dataclasses.replace(
         base,
-        trading=dataclasses.replace(base.trading, enabled=enabled, strategy=strategy, symbols=tuple(symbols)),
+        trading=dataclasses.replace(base.trading, enabled=enabled, strategy=strategy, symbols=tuple(symbols),
+                                    instrument=instrument),
         risk=dataclasses.replace(base.risk, **risk_changes),
     )
 

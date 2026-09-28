@@ -76,9 +76,13 @@ class FakeBroker:
         return AccountSnapshot(self.account_number, self.equity, self.last_equity, self.cash, self.cash * 4, self.trading_blocked)
 
     def positions(self):
-        return [
-            PositionSnapshot(s, q, avg, self.price, (self.price - avg) * q) for s, (q, avg) in self.positions_.items()
-        ]
+        from baselinetrading.options import MULTIPLIER, is_option
+
+        out = []
+        for s, (q, avg) in self.positions_.items():
+            price, mult = (self.option_bid, MULTIPLIER) if is_option(s) else (self.price, 1)
+            out.append(PositionSnapshot(s, q, avg, price, (price - avg) * q * mult))
+        return out
 
     def open_orders(self):
         return [o for o in self.orders.values() if o.is_open]
@@ -92,9 +96,10 @@ class FakeBroker:
         self.mutations.append(("submit_market", symbol, side, qty))
         filled = qty if side == "sell" else round(qty * self.fill_fraction, 4)
         status = "filled" if filled == qty else ("partially_filled" if filled else "accepted")
-        order = self._store(symbol, side, "market", qty, filled, self.price if filled else None, None, status, client_order_id)
+        price = self._price_of(symbol, side)
+        order = self._store(symbol, side, "market", qty, filled, price if filled else None, None, status, client_order_id)
         if filled:
-            self._apply(symbol, side, filled, self.price)
+            self._apply(symbol, side, filled, price)
         return order
 
     @requires_risk_manager
@@ -121,9 +126,28 @@ class FakeBroker:
         if symbol not in self.positions_:
             return None
         qty = self.positions_[symbol][0]
-        order = self._store(symbol, "sell", "market", qty, qty, self.price, None, "filled", f"close-{symbol}")
-        self._apply(symbol, "sell", qty, self.price)
+        price = self._price_of(symbol, "sell")
+        order = self._store(symbol, "sell", "market", qty, qty, price, None, "filled", f"close-{symbol}")
+        self._apply(symbol, "sell", qty, price)
         return order
+
+    def _price_of(self, symbol, side):
+        from baselinetrading.options import is_option
+
+        if is_option(symbol):
+            return self.option_ask if side == "buy" else self.option_bid
+        return self.price
+
+    option_bid, option_ask = 4.90, 5.00  # every contract's quote; market orders on options fill at the ask
+
+    def option_contracts(self, underlying, expires_from, expires_to):
+        from baselinetrading.options import Contract
+
+        expiry = expires_from + dt.timedelta(days=2)
+        return [Contract(f"{underlying}{expiry:%y%m%d}C{int(k * 1000):08d}", expiry, float(k)) for k in (495, 500, 505, 510)]
+
+    def option_quote(self, symbol):
+        return self.option_bid, self.option_ask
 
     # test helpers (not broker API)
     def trigger_stop(self, price):
@@ -147,17 +171,23 @@ class FakeBroker:
 
     def _apply(self, symbol, side, qty, price):
         held, avg = self.positions_.get(symbol, [0.0, 0.0])
+        from baselinetrading.options import MULTIPLIER, is_option
+
+        mult = MULTIPLIER if is_option(symbol) else 1
         if side == "buy":
-            self.cash -= qty * price
+            self.cash -= qty * price * mult
             self.positions_[symbol] = [held + qty, (held * avg + qty * price) / (held + qty)]
         else:
-            self.cash += qty * price
+            self.cash += qty * price * mult
             left = round(held - qty, 6)
             if left <= 0:
                 self.positions_.pop(symbol, None)
             else:
                 self.positions_[symbol] = [left, avg]
-        self.equity = self.cash + sum(q * self.price for q, _ in self.positions_.values())
+        from baselinetrading.options import MULTIPLIER, is_option
+
+        self.equity = self.cash + sum(q * (self.option_bid * MULTIPLIER if is_option(s) else self.price)
+                                      for s, (q, _) in self.positions_.items())
 
 
 def _replace(order, **changes):

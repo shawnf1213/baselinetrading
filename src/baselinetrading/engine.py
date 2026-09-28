@@ -109,6 +109,7 @@ class Engine:
             self._check_health(session, now)
             self.gateway.reconcile()
             self._protective_exits(session, now)
+            self._option_stops()
             if self.strategy in BREAKOUTS:
                 self._note_outcomes()
                 self._maybe_decide_orb(session, now)
@@ -168,6 +169,16 @@ class Engine:
             self.gateway.exit_all("system", "daily loss limit hit")
         elif session and now >= session.close - dt.timedelta(minutes=self._config.risk.flatten_minutes_before_close):
             self.gateway.exit_all("system", "flatten before the close")
+
+    def _option_stops(self) -> None:
+        """Alpaca takes no stop orders on options: sell a call when its stock's latest price is at or below the stop."""
+        for key, trade in list(self.gateway.open_trades.items()):
+            if not trade.stop_underlying:
+                continue
+            health = self.gateway.healths.get(key)
+            if health and health.ok and health.price is not None and health.price <= trade.stop_underlying:
+                self.gateway.exit_all("system", f"{key} traded at {health.price:.2f}, at or below the stop "
+                                                f"{trade.stop_underlying:.2f}", symbol=key)
 
     def _maybe_decide(self, session: Session | None, now: dt.datetime) -> None:
         if self.gateway.decided_today or session is None:
@@ -238,11 +249,17 @@ class Engine:
             self.watching.pop(symbol, None)
             self._record(decision, symbol)
             if decision.action == BUY:
-                share = gw.slice_usd(gw.context(symbol).account)
-                gw.submit_entry(
-                    "strategy", symbol, notional=share * STRATEGY_NOTIONAL_FRACTION,
-                    stop_price=decision.stop_price, inputs=decision.inputs,
-                )
+                account = gw.context(symbol).account
+                share = gw.slice_usd(account)
+                if self._config.trading.instrument == "options":
+                    budget = min(share, gw.risk.sizing_equity(account) * self._config.risk.max_risk_per_trade_pct / 100)
+                    gw.submit_option_entry("strategy", symbol, stop_underlying=decision.stop_price,
+                                           budget_usd=budget, inputs=decision.inputs)
+                else:
+                    gw.submit_entry(
+                        "strategy", symbol, notional=share * STRATEGY_NOTIONAL_FRACTION,
+                        stop_price=decision.stop_price, inputs=decision.inputs,
+                    )
 
     def _symbol_outcomes(self, symbol: str) -> list[bool]:
         # Records from before the split account have no symbol; they were the first symbol's (SPY).
@@ -374,7 +391,7 @@ class Engine:
                     "decided": symbol in gw.decided_symbols,
                     "status": (f"{signal['action']}: {signal['reason']}" if signal
                                else self.watching.get(symbol, "waiting for the opening range")),
-                    "holding": any(p["symbol"] == symbol for p in positions),
+                    "holding": symbol in gw.open_trades or any(p["symbol"] == symbol for p in positions),
                 })
             orb = self.active_orb_spec()
             entry_time = orb.at(session, orb.range_end) if session else None

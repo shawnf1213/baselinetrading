@@ -17,7 +17,7 @@ VALID = {
         "no_new_entries_minutes_before_close": 15,
         "flatten_minutes_before_close": 5,
     },
-    "trading": {"enabled": False, "symbols": ["SPY"], "strategy": "last_half_hour"},
+    "trading": {"enabled": False, "symbols": ["SPY"], "strategy": "last_half_hour", "instrument": "shares"},
     "costs": {
         "spread_usd_per_share": 0.01,
         "slippage_bps_per_side": 1.0,

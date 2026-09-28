@@ -57,6 +57,20 @@ class EntryOrder:
 
 
 @dataclass(frozen=True)
+class OptionEntryOrder:
+    """Buy `qty` call contracts on `underlying`; the engine sells them if the stock trades at or below stop_underlying."""
+
+    source: str
+    underlying: str
+    contract: str
+    qty: float
+    bid: float
+    ask: float
+    stop_underlying: float
+    max_spread_pct: float
+
+
+@dataclass(frozen=True)
 class ExitOrder:
     source: str
     reason: str
@@ -146,7 +160,9 @@ class RiskManager:
         symbols = self._config.trading.symbols
         if order.symbol not in symbols:
             reasons.append(f"{order.symbol} is not in the allowed symbols {list(symbols)}")
-        if any(p.symbol == order.symbol for p in ctx.positions):
+        from baselinetrading.options import underlying_of
+
+        if any(underlying_of(p.symbol) == order.symbol for p in ctx.positions):
             reasons.append(f"one position per symbol: already holding {order.symbol}")
         if any(o.side == "buy" and o.symbol == order.symbol for o in ctx.open_orders):
             reasons.append(f"a buy order for {order.symbol} is already working")
@@ -189,12 +205,64 @@ class RiskManager:
             reasons.append(f"risk to stop ${trade_risk:,.2f} exceeds the ${max(remaining, 0):,.2f} left of today's loss limit")
         return Verdict(not reasons, tuple(reasons), metrics)
 
+    def evaluate_option_entry(self, order: OptionEntryOrder, ctx: RiskContext) -> Verdict:
+        """Options: the premium is the risk (a call can expire worthless), so it must fit every limit."""
+        from baselinetrading.options import MULTIPLIER, underlying_of
+
+        reasons = list(self.entry_blockers(ctx))
+        metrics: dict[str, float] = {}
+        if order.source not in SOURCES:
+            reasons.append(f"unknown order source {order.source!r}")
+        symbols = self._config.trading.symbols
+        if order.underlying not in symbols:
+            reasons.append(f"{order.underlying} is not in the allowed symbols {list(symbols)}")
+        if underlying_of(order.contract) != order.underlying:
+            reasons.append(f"contract {order.contract} is not on {order.underlying}")
+        if any(underlying_of(p.symbol) == order.underlying for p in ctx.positions):
+            reasons.append(f"one position per symbol: already holding {order.underlying} or an option on it")
+        if any(o.side == "buy" and underlying_of(o.symbol) == order.underlying for o in ctx.open_orders):
+            reasons.append(f"a buy order for {order.underlying} is already working")
+        price = ctx.reference_price
+        if price is None or not (math.isfinite(price) and price > 0):
+            reasons.append(f"no valid live price for {order.underlying}")
+            return Verdict(False, tuple(reasons), metrics)
+        if not (math.isfinite(order.ask) and order.ask > 0 and math.isfinite(order.bid) and 0 <= order.bid <= order.ask):
+            reasons.append(f"no usable quote for {order.contract}: bid {order.bid!r}, ask {order.ask!r}")
+            return Verdict(False, tuple(reasons), metrics)
+        if not (float(order.qty).is_integer() and order.qty >= 1):
+            reasons.append(f"options trade in whole contracts; the budget buys {order.qty!r}")
+            return Verdict(False, tuple(reasons), metrics)
+        if not (math.isfinite(order.stop_underlying) and 0 < order.stop_underlying < price):
+            reasons.append(f"the stop on {order.underlying} must be below its price {price:.2f}, got {order.stop_underlying!r}")
+        spread_pct = (order.ask - order.bid) / order.ask * 100
+        if spread_pct > order.max_spread_pct:
+            reasons.append(f"{order.contract} spread {spread_pct:.1f}% of the ask is wider than {order.max_spread_pct:g}%")
+        premium = order.qty * order.ask * MULTIPLIER
+        sizing = self.sizing_equity(ctx.account)
+        share = sizing / len(symbols)
+        max_risk = sizing * self._config.risk.max_risk_per_trade_pct / 100
+        remaining = self.daily_loss_limit_usd(ctx.account) + self.day_pnl_usd(ctx.account)
+        metrics.update(premium_usd=premium, max_risk_usd=max_risk, symbol_share_usd=share, spread_pct=spread_pct)
+        if premium > max_risk:
+            reasons.append(f"premium ${premium:,.2f} exceeds {self._config.risk.max_risk_per_trade_pct:g}% of equity "
+                           f"(${max_risk:,.2f}); a call can go to zero")
+        if premium > share:
+            reasons.append(f"premium ${premium:,.2f} exceeds {order.underlying}'s share of the account ${share:,.2f}")
+        if premium > ctx.account.cash:
+            reasons.append(f"premium ${premium:,.2f} exceeds cash ${ctx.account.cash:,.2f}")
+        if premium > remaining:
+            reasons.append(f"premium ${premium:,.2f} exceeds the ${max(remaining, 0):,.2f} left of today's loss limit")
+        return Verdict(not reasons, tuple(reasons), metrics)
+
     # --- the single door to the broker -------------------------------------------------
 
-    def execute(self, request: EntryOrder | ExitOrder | KillOrder, ctx: RiskContext, send: Callable[[], Any]) -> Execution:
+    def execute(self, request: EntryOrder | OptionEntryOrder | ExitOrder | KillOrder, ctx: RiskContext,
+                send: Callable[[], Any]) -> Execution:
         """Evaluate `request`; run `send` (which talks to the broker) only if approved."""
         if isinstance(request, EntryOrder):
             verdict = self.evaluate_entry(request, ctx)
+        elif isinstance(request, OptionEntryOrder):
+            verdict = self.evaluate_option_entry(request, ctx)
         elif isinstance(request, (ExitOrder, KillOrder)):
             if request.source not in SOURCES:
                 return Execution(Verdict(False, (f"unknown order source {request.source!r}",)))
