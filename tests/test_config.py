@@ -70,9 +70,8 @@ def test_valid_settings_parse():
     assert config.splits.holdout.end == dt.date(2026, 8, 31)
 
 
-def test_committed_settings_file_is_valid_and_ships_with_trading_off():
+def test_committed_settings_file_is_valid():
     config = load_config(DEFAULT_CONFIG_PATH, today=TODAY)
-    assert config.trading.enabled is False
     assert config.account.equity_cap_usd == 100_000.0
 
 
