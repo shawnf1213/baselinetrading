@@ -13,7 +13,7 @@ the no-change forecast, buy-and-hold, and random entries (see
 | 0 | Edge definition: cost model, breakeven win rate, sample sizes | done |
 | 1 | Project structure, fail-closed config, credentials | done |
 | 2 | Market data with staleness and gap detection | done |
-| 3 | Strategy C, last-half-hour momentum (separate from execution) | done; rules in [docs/decisions.md](docs/decisions.md) |
+| 3 | Strategies (separate from execution): C, last-half-hour momentum; A, opening range breakout; A2, adaptive breakout over 8 stocks (the default, `trading.strategy`) | done; rules in [docs/decisions.md](docs/decisions.md) |
 | 4 | Backtester: costs, walk-forward, baselines, trial ledger, holdout lock | done (needs Alpaca data to run) |
 | 5 | Risk manager with order veto (manual and strategy) | done |
 | 6 | Execution: order gateway, engine, FastAPI backend, React UI | done |
@@ -67,11 +67,12 @@ docker run --env-file .env -p 127.0.0.1:8000:8000 \
 
 Before exposing it beyond localhost, put it behind HTTPS: the token travels in
 every request. Use an always-on host; one that sleeps when idle would miss the
-15:30 entry and the 15:55 exit. The strategy engine runs inside the backend
+breakouts from 09:35 and the 15:55 exit. The strategy engine runs inside the backend
 process, so the UI shows "engine is not running" if it stops.
 
 The web UI:
-- Chart (TradingView Lightweight Charts, 1-minute SPY) with entry and stop
+- Watchlist of every traded stock: price, opening range, data health, breakout status.
+- Chart (TradingView Lightweight Charts, 1-minute, the stock picked in the watchlist) with entry and stop
   lines. It's for display only; decisions use validated data.
 - Manual order ticket: a market buy with a mandatory stop.
 - Open position: close it.
@@ -107,7 +108,9 @@ These can't be switched off in `config/settings.toml`:
   `********`, can't be pickled, and a logging filter scrubs them from log
   lines and tracebacks.
 - Live key IDs (`AK…`) are refused.
-- Coming in later modules: one position at a time, a stop on every order,
+- The account is split equally over `trading.symbols`: at most one position per
+  symbol, each within its share.
+- Coming in later modules: a stop on every order,
   a kill switch, and no trading on stale or gapped data.
 
 ## Constraints that shape the design

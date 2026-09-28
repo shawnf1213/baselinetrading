@@ -136,4 +136,30 @@ accepted. Not tuned. This is the third distinct spec (trial count 3).
 
 **Abandon if:** as for A and C.
 
+## 2026-09-28: Split account over 8 stocks; breakout v2 (gaps after the range)
+
+You want the bot to trade like a day trader across several stocks, with the
+account split between them, and every paper trade feeding back into the data.
+
+**Account:** `trading.symbols` = SPY, AAPL, NVDA, AMD, MSFT, TSLA, META, AMZN.
+Sizing equity is split equally (8 x $12,500 at $100,000). At most one position
+per symbol, each no bigger than its share; several symbols can be held at once.
+`risk.max_entries_per_day = 20` across all symbols. Risk per trade (2%) and the
+daily loss limit (5%) are unchanged and apply to the whole account.
+
+**Strategy:** A2 (adaptive breakout) runs on every symbol independently: each
+has its own opening range, breakout, stop, one entry per day and its own
+loss streak (range 5 -> 15 -> 30 after 3 losses in a row on that symbol).
+
+**Rule change, v2:** the free IEX feed often has minutes with no trade for a
+single stock (AMD missed 3-42 minutes a day in mid-September). v1 cancelled
+the day on any missing minute. v2 still requires a complete opening range,
+but a later missing minute simply can't be a breakout, and live data health
+accepts gaps as long as the newest bar is fresh. The backtest does the same
+(next available bar for fills). Because this changes the rules, v2 specs have
+new fingerprints: A v2 `6508347fbb9962bf`, A2 v2 `0fdc4b1982b381f4`.
+
+**Backtest:** each symbol with its $12,500 share, reported per symbol plus a
+summary (`results/*-summary.txt`).
+
 ## Tuned-parameter trial count: 0

@@ -16,7 +16,8 @@ export default function Header({ status, stale, error }: { status: Status | null
         </div>
         <div className={`bot-state ${armed ? "armed" : "disarmed"}`}>
           Strategy {armed ? "ARMED" : "DISARMED"}
-          {armed && status?.next_decision && <span className="muted"> · decides at {etTime(status.next_decision)} ET</span>}
+          {armed && (status?.symbols?.length ?? 0) > 0 && <span className="muted"> · watching {status?.symbols?.filter((s) => !s.decided).length} of {status?.symbols?.length} stocks for breakouts</span>}
+          {armed && !(status?.symbols?.length) && status?.next_decision && <span className="muted"> · decides at {etTime(status.next_decision)} ET</span>}
         </div>
         <div className="header-facts">
           <span>{status?.symbol ?? "—"} {status?.data?.price ? usd(status.data.price) : ""}</span>

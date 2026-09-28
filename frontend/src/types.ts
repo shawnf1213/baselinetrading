@@ -17,6 +17,28 @@ export interface SourcePnl {
   win_rate_ci: [number, number] | null;
 }
 
+export interface Position {
+  symbol: string;
+  qty: number;
+  entry: number;
+  price: number;
+  unrealized_pl: number;
+  stop: number | null;
+  source: string;
+}
+
+// One traded symbol's breakout state (empty for the single-symbol strategy).
+export interface SymbolState {
+  symbol: string;
+  range_minutes: number;
+  price: number | null;
+  data_ok: boolean;
+  data_reason: string;
+  decided: boolean;
+  status: string;
+  holding: boolean;
+}
+
 export interface Status {
   state: string;
   mode: string;
@@ -35,19 +57,15 @@ export interface Status {
     equity: number;
     cash: number;
     sizing_equity: number;
+    symbol_share?: number;
     day_pnl: number;
     daily_loss_limit: number;
   };
   limits?: { max_risk_per_trade_usd: number; entries_today: number; max_entries_per_day: number };
-  position?: {
-    symbol: string;
-    qty: number;
-    entry: number;
-    price: number;
-    unrealized_pl: number;
-    stop: number | null;
-    source: string;
-  } | null;
+  position?: Position | null;
+  positions?: Position[];
+  strategy?: string;
+  symbols?: SymbolState[];
   pnl_today?: { manual: SourcePnl; strategy: SourcePnl };
   breakeven?: { round_trip_cost_usd: number; round_trip_cost_bps: number; notional_usd: number } | null;
   signals: JournalEvent[];

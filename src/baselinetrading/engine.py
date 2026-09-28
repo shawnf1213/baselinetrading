@@ -53,14 +53,15 @@ class Engine:
     ) -> None:
         self.gateway = gateway
         self.data = data
-        self.symbol = symbol
+        self.symbol = symbol  # the chart's symbol, and strategy C's only one
+        self.symbols: tuple[str, ...] = gateway.symbols  # every symbol the breakout trades
         self._clock = clock
         self._spec = spec
         self._config = gateway._config
         self.strategy = strategy or self._config.trading.strategy
         self._orb_spec = orb_spec
-        self._orb_checked: dt.datetime | None = None  # the minute last evaluated
-        self.watching: str | None = None  # the breakout strategy's latest WAIT reason
+        self._orb_checked: dict[str, dt.datetime] = {}  # per symbol: the minute last evaluated
+        self.watching: dict[str, str] = {}  # per symbol: the breakout's latest WAIT reason
         # The adaptive breakout's memory: every closed strategy trade, oldest first.
         state_dir = gateway._state_dir
         self._outcomes_path = state_dir / "adaptive_orb_outcomes.json" if state_dir else None
@@ -127,25 +128,32 @@ class Engine:
         return self._sessions[today]
 
     def _check_health(self, session: Session | None, now: dt.datetime) -> None:
+        """Per symbol: recent live bars that parse, and a fresh newest bar.
+
+        The breakout strategies accept missing minutes (a single stock often has
+        minutes without an IEX trade); strategy C keeps its gap-free rule.
+        """
         if self._last_health and now - self._last_health < HEALTH_EVERY:
             return
         self._last_health = now
-        health = self.gateway.health
-        health.checked_at = now
-        if session is None:
-            health.ok, health.reason, health.price = False, self._calendar_error or "market closed today", None
-            return
-        if not session.open <= now < session.close:
-            health.ok, health.reason, health.price = False, "outside market hours", None
-            return
-        start = max(session.open, now.replace(second=0, microsecond=0) - HEALTH_LOOKBACK)
-        try:
-            bars = self.data.live_minute_bars(self.symbol, session, start)
-        except DataUnavailable as exc:
-            health.ok, health.reason, health.price = False, str(exc), None
-            return
-        health.ok, health.reason = True, ""
-        health.price, health.last_bar_end = bars[-1].close, bars[-1].end
+        symbols = self.symbols if self.strategy in BREAKOUTS else (self.symbol,)
+        for symbol in symbols:
+            health = self.gateway.healths[symbol]
+            health.checked_at = now
+            if session is None:
+                health.ok, health.reason, health.price = False, self._calendar_error or "market closed today", None
+                continue
+            if not session.open <= now < session.close:
+                health.ok, health.reason, health.price = False, "outside market hours", None
+                continue
+            start = max(session.open, now.replace(second=0, microsecond=0) - HEALTH_LOOKBACK)
+            try:
+                bars = self.data.live_minute_bars(symbol, session, start, allow_gaps=self.strategy in BREAKOUTS)
+            except DataUnavailable as exc:
+                health.ok, health.reason, health.price = False, str(exc), None
+                continue
+            health.ok, health.reason = True, ""
+            health.price, health.last_bar_end = bars[-1].close, bars[-1].end
 
     def _protective_exits(self, session: Session | None, now: dt.datetime) -> None:
         ctx = self.gateway.context()
@@ -178,50 +186,64 @@ class Engine:
             )
 
     def _maybe_decide_orb(self, session: Session | None, now: dt.datetime) -> None:
-        """Once a minute from 09:35: buy on the bar that just closed above the opening range."""
-        if self.gateway.decided_today or session is None:
-            self.watching = None
-            return
-        spec = self.active_orb_spec()
-        if not session.is_full_day:
-            self._record(Decision(session.date, NO_TRADE, "half day: the strategy doesn't trade"))
-            return
-        if now < spec.at(session, spec.range_end) + DECISION_DELAY:
-            return
-        if now >= spec.at(session, spec.last_entry):
-            reason = self.watching or "no breakout was seen (engine wasn't running or data was unavailable)"
-            self._record(Decision(session.date, NO_TRADE, f"no entry before {spec.last_entry:%H:%M}: {reason}"))
+        """Once a minute from the end of the opening range, for every symbol: buy on the bar that just
+        closed above that symbol's range, with that symbol's share of the account."""
+        if session is None:
+            self.watching = {}
             return
         minute = now.replace(second=0, microsecond=0)
-        if self._orb_checked == minute or now - minute < DECISION_DELAY:
-            return
-        self._orb_checked = minute
-        try:
-            bars = self.data.live_minute_bars(self.symbol, session, session.open)
-        except DataUnavailable as exc:  # retried next minute; the status shows why
-            self.watching = f"data unavailable: {exc}"
-            return
-        decision = decide_orb(session, bars, spec)
-        if decision.action == WAIT:
-            self.watching = decision.reason
-            return
-        if decision.action == BUY and decision.entry_at != bars[-1].end:
-            decision = Decision(session.date, NO_TRADE,
-                                f"missed the breakout ({decision.reason}); the engine saw it late", decision.inputs)
-        self.watching = None
-        self._record(decision)
-        if decision.action == BUY:
-            sizing = self.gateway.risk.sizing_equity(self.gateway.context().account)
-            self.gateway.submit_entry(
-                "strategy", self.symbol, notional=sizing * STRATEGY_NOTIONAL_FRACTION,
-                stop_price=decision.stop_price, inputs=decision.inputs,
-            )
+        for symbol in self.symbols:
+            if symbol in self.gateway.decided_symbols:
+                self.watching.pop(symbol, None)
+                continue
+            spec = self.active_orb_spec(symbol)
+            if not session.is_full_day:
+                self._record(Decision(session.date, NO_TRADE, "half day: the strategy doesn't trade"), symbol)
+                continue
+            if now < spec.at(session, spec.range_end) + DECISION_DELAY:
+                continue
+            if now >= spec.at(session, spec.last_entry):
+                reason = self.watching.get(symbol) or "no breakout was seen (engine wasn't running or data was unavailable)"
+                self._record(Decision(session.date, NO_TRADE, f"no entry before {spec.last_entry:%H:%M}: {reason}"), symbol)
+                continue
+            if self._orb_checked.get(symbol) == minute or now - minute < DECISION_DELAY:
+                continue
+            self._orb_checked[symbol] = minute
+            try:
+                bars = self.data.live_minute_bars(symbol, session, session.open, allow_gaps=True, fresh=False)
+            except DataUnavailable as exc:  # retried next minute; the status shows why
+                self.watching[symbol] = f"data unavailable: {exc}"
+                continue
+            decision = decide_orb(session, bars, spec, until=minute)
+            if decision.action == WAIT:
+                self.watching[symbol] = decision.reason
+                continue
+            if decision.action == BUY and decision.entry_at != minute:
+                decision = Decision(session.date, NO_TRADE,
+                                    f"missed the breakout ({decision.reason}); the engine saw it late", decision.inputs)
+            self.watching.pop(symbol, None)
+            self._record(decision, symbol)
+            if decision.action == BUY:
+                share = self.gateway.slice_usd(self.gateway.context(symbol).account)
+                self.gateway.submit_entry(
+                    "strategy", symbol, notional=share * STRATEGY_NOTIONAL_FRACTION,
+                    stop_price=decision.stop_price, inputs=decision.inputs,
+                )
 
-    def active_orb_spec(self) -> OrbSpec:
-        """Today's breakout rules; for the adaptive strategy, the range length its loss record gives."""
+    def _symbol_outcomes(self, symbol: str) -> list[bool]:
+        # Records from before the split account have no symbol; they were the first symbol's (SPY).
+        return [o["won"] for o in self._outcomes if o.get("symbol", self.symbols[0]) == symbol]
+
+    def active_orb_spec(self, symbol: str | None = None) -> OrbSpec:
+        """Today's breakout rules; for the adaptive strategy, the range length the symbol's loss record gives."""
         if self.strategy == "adaptive_opening_range_breakout":
-            return ADAPTIVE_ORB_SPEC.day_spec([o["won"] for o in self._outcomes])
+            return ADAPTIVE_ORB_SPEC.day_spec(self._symbol_outcomes(symbol or self.symbols[0]))
         return self._orb_spec
+
+    def range_minutes(self, symbol: str) -> int:
+        spec = self.active_orb_spec(symbol)
+        span = dt.datetime.combine(dt.date.min, spec.range_end) - dt.datetime.combine(dt.date.min, spec.range_start)
+        return int(span.total_seconds() // 60)
 
     def _load_outcomes(self) -> list[dict]:
         if self._outcomes_path is None or not self._outcomes_path.exists():
@@ -229,24 +251,30 @@ class Engine:
         return json.loads(self._outcomes_path.read_text(encoding="utf-8"))
 
     def _note_outcomes(self) -> None:
-        """Remember each newly closed strategy trade, so the loss streak survives restarts."""
+        """Remember each newly closed strategy trade, so each symbol's loss streak survives restarts."""
         seen = {o["entry_time"] for o in self._outcomes}
         new = [t for t in self.gateway.closed_trades
                if t.source == "strategy" and t.net_pnl is not None and t.entry_time not in seen]
         if not new:
             return
-        self._outcomes += [{"entry_time": t.entry_time, "net_pnl": t.net_pnl, "won": t.net_pnl > 0} for t in new]
+        self._outcomes += [{"symbol": t.symbol, "entry_time": t.entry_time, "net_pnl": t.net_pnl,
+                            "won": t.net_pnl > 0} for t in new]
         if self._outcomes_path is not None:
             self._outcomes_path.parent.mkdir(parents=True, exist_ok=True)
             self._outcomes_path.write_text(json.dumps(self._outcomes, indent=1), encoding="utf-8")
 
-    def _record(self, decision) -> None:
+    def _record(self, decision, symbol: str | None = None) -> None:
+        extra: dict[str, Any] = {}
         if self.strategy == "adaptive_opening_range_breakout":
-            spec, extra = ADAPTIVE_ORB_SPEC, {"range_minutes": ADAPTIVE_ORB_SPEC.range_minutes(
-                [o["won"] for o in self._outcomes])}
+            spec = ADAPTIVE_ORB_SPEC
+            extra["range_minutes"] = self.range_minutes(symbol or self.symbols[0])
         else:
-            spec, extra = (self._orb_spec if self.strategy in BREAKOUTS else self._spec), {}
-        self.gateway.decided_today = True
+            spec = self._orb_spec if self.strategy in BREAKOUTS else self._spec
+        if symbol is None:
+            self.gateway.decided_today = True
+        else:
+            self.gateway.decided_symbols.add(symbol)
+            extra["symbol"] = symbol
         self.gateway.journal.record(
             "signal", "strategy", date=decision.date, action=decision.action, reason=decision.reason,
             inputs=decision.inputs, spec=spec.fingerprint(), strategy=self.strategy, **extra,
@@ -257,13 +285,15 @@ class Engine:
     def build_status(self) -> dict[str, Any]:
         gw = self.gateway
         now = self._clock()
+        breakout = self.strategy in BREAKOUTS
         base = {
             "state": "running" if self.running else "stopped",
             "mode": "PAPER",
             "now": now.isoformat(),
             "symbol": self.symbol,
+            "strategy": self.strategy,
             "engine_error": self.last_error,
-            "signals": gw.journal.recent(10, {"signal"}),
+            "signals": gw.journal.recent(max(10, 2 * len(self.symbols)), {"signal"}),
             "events": gw.journal.recent(40),
             "kill_switch": gw.kill_switch,
         }
@@ -278,62 +308,84 @@ class Engine:
         session = ctx.session
         blockers = risk.entry_blockers(ctx)
         bot_reasons = [r for r in blockers if not r.startswith(_TIME_OF_DAY)]
+        if breakout:  # data health is per symbol and shown per symbol
+            bot_reasons = [r for r in bot_reasons if not r.startswith("market data is not healthy")]
         if session is not None and not (session.open <= now < session.close):
             bot_reasons = [r for r in bot_reasons if not r.startswith("market data is not healthy")]
         if session is not None and not session.is_full_day:
             bot_reasons.append("half day: the strategy doesn't trade")
-        if gw.decided_today:
+        if not breakout and gw.decided_today:
             last = gw.journal.recent(1, {"signal"})
             what = f"{last[0]['action']}: {last[0]['reason']}" if last else "done"
             bot_reasons.append(f"today's decision is made ({what})")
+        if breakout and session is not None and all(s in gw.decided_symbols for s in self.symbols):
+            bot_reasons.append("every symbol's decision for today is made")
         if not self.running:
             bot_reasons.insert(0, "strategy engine is not running")
         if self.last_error:
             bot_reasons.append(f"last engine error: {self.last_error}")
 
-        position = None
-        if ctx.positions:
-            p = ctx.positions[0]
+        positions = []
+        for p in ctx.positions:
             stops = [o for o in ctx.open_orders if o.symbol == p.symbol and o.type == "stop"]
-            trade = gw.open_trade
-            position = {
+            trade = gw.open_trades.get(p.symbol)
+            positions.append({
                 "symbol": p.symbol, "qty": p.qty, "entry": p.avg_entry_price, "price": p.current_price,
                 "unrealized_pl": p.unrealized_pl, "stop": stops[0].stop_price if stops else None,
-                "source": trade.source if trade and trade.symbol == p.symbol else "unknown",
-            }
-        price = ctx.reference_price or (position["price"] if position else None)
+                "source": trade.source if trade else "unknown",
+            })
         sizing = risk.sizing_equity(ctx.account)
+        share = gw.slice_usd(ctx.account) if breakout else sizing
+        price = ctx.reference_price or (positions[0]["price"] if positions else None)
         breakeven = None
         if price:
-            cost = round_trip_cost(self._config.costs, notional_usd=sizing * STRATEGY_NOTIONAL_FRACTION, price=price)
+            cost = round_trip_cost(self._config.costs, notional_usd=share * STRATEGY_NOTIONAL_FRACTION, price=price)
             breakeven = {"round_trip_cost_usd": cost.total_usd, "round_trip_cost_bps": cost.total_bps,
                          "notional_usd": cost.notional_usd}
-        if self.strategy in BREAKOUTS:
+        symbols = []
+        if breakout:
+            last_signal = {}
+            for event in reversed(gw.journal.recent(200, {"signal"})):
+                if event.get("symbol"):
+                    last_signal[event["symbol"]] = event
+            for symbol in self.symbols:
+                health = gw.healths[symbol]
+                signal = last_signal.get(symbol) if symbol in gw.decided_symbols else None
+                symbols.append({
+                    "symbol": symbol, "range_minutes": self.range_minutes(symbol),
+                    "price": health.price, "data_ok": health.ok, "data_reason": health.reason,
+                    "decided": symbol in gw.decided_symbols,
+                    "status": (f"{signal['action']}: {signal['reason']}" if signal
+                               else self.watching.get(symbol, "waiting for the opening range")),
+                    "holding": any(p["symbol"] == symbol for p in positions),
+                })
             orb = self.active_orb_spec()
             entry_time = orb.at(session, orb.range_end) if session else None
+            next_decision = entry_time.isoformat() if entry_time and len(gw.decided_symbols) < len(self.symbols) else None
         else:
             entry_time = self._spec.at(session, self._spec.entry_time) if session else None
+            next_decision = entry_time.isoformat() if entry_time and not gw.decided_today else None
         return {
             **base,
             "armed": not bot_reasons,
             "disarmed_reasons": bot_reasons,
-            "next_decision": entry_time.isoformat() if entry_time and not gw.decided_today else None,
-            "strategy": self.strategy,
-            "range_minutes": (int((dt.datetime.combine(dt.date.min, self.active_orb_spec().range_end)
-                                   - dt.datetime.combine(dt.date.min, self.active_orb_spec().range_start))
-                                  .total_seconds() // 60) if self.strategy in BREAKOUTS else None),
-            "watching": self.watching if not gw.decided_today else None,
+            "next_decision": next_decision,
+            "range_minutes": self.range_minutes(self.symbols[0]) if breakout else None,
+            "watching": self.watching.get(self.symbols[0]) if breakout else None,
+            "symbols": symbols,
             "entry": {"enabled": not blockers, "reasons": blockers},
             "data": {"ok": ctx.data_ok, "reason": ctx.data_reason, "price": ctx.reference_price,
                      "last_bar_end": gw.health.last_bar_end.isoformat() if gw.health.last_bar_end else None,
                      "feed": self.data.live_feed},
             "account": {"number": ctx.account.account_number, "paper": ctx.account.is_paper,
                         "equity": ctx.account.equity, "cash": ctx.account.cash, "sizing_equity": sizing,
+                        "symbol_share": share,
                         "day_pnl": risk.day_pnl_usd(ctx.account),
                         "daily_loss_limit": risk.daily_loss_limit_usd(ctx.account)},
             "limits": {"max_risk_per_trade_usd": sizing * self._config.risk.max_risk_per_trade_pct / 100,
                        "entries_today": gw.entries_today, "max_entries_per_day": self._config.risk.max_entries_per_day},
-            "position": position,
+            "position": positions[0] if positions else None,
+            "positions": positions,
             "session": {"open": session.open.isoformat(), "close": session.close.isoformat()} if session else None,
             "pnl_today": summarize(gw.closed_trades),
             "breakeven": breakeven,

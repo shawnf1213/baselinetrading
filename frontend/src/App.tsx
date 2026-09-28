@@ -9,6 +9,7 @@ import PnlCard from "./components/PnlCard";
 import SignalsTable from "./components/SignalsTable";
 import EventLog from "./components/EventLog";
 import KillSwitch from "./components/KillSwitch";
+import Watchlist from "./components/Watchlist";
 
 const STALE_AFTER_MS = 10_000;
 
@@ -18,6 +19,7 @@ export default function App() {
   const [lastUpdate, setLastUpdate] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [picked, setPicked] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   const refresh = useCallback(async () => {
@@ -60,6 +62,7 @@ export default function App() {
 
   if (!token) return <Login onToken={(t) => { setToken(t); setTokenState(t); }} />;
 
+  const selected = picked ?? status?.symbol ?? "SPY";
   const stale = !lastUpdate || now - lastUpdate > STALE_AFTER_MS;
   // If the UI isn't receiving updates, it can't know the bot's state, so it must not offer to trade.
   const uiReasons = stale ? ["this page is not receiving live updates from the backend"] : [];
@@ -69,13 +72,18 @@ export default function App() {
       <Header status={status} stale={stale} error={error} />
       <main className="grid">
         <section className="panel chart-panel">
-          <PriceChart status={status} />
+          <PriceChart status={status} symbol={selected} />
         </section>
         <aside className="side">
-          <OrderTicket status={status} extraReasons={uiReasons} onDone={refresh} />
+          <OrderTicket status={status} symbol={selected} extraReasons={uiReasons} onDone={refresh} />
           <PositionCard status={status} extraReasons={uiReasons} onDone={refresh} />
           <KillSwitch status={status} onDone={refresh} />
         </aside>
+        {(status?.symbols?.length ?? 0) > 0 && (
+          <section className="panel wide">
+            <Watchlist status={status} selected={selected} onSelect={setPicked} />
+          </section>
+        )}
         <section className="panel">
           <PnlCard status={status} />
         </section>

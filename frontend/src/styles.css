@@ -93,3 +93,4 @@ tr.alert td { background: #22151a; }
   .chart { height: 320px; }
   .header-facts { margin-left: 0; }
 }
+tr.selected td { background: #17202b; }

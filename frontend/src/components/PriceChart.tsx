@@ -16,7 +16,7 @@ const ET = (t: number) =>
   new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
 
 // Lightweight Charts (Apache 2.0). The TradingView attribution logo stays on, as its license asks.
-export default function PriceChart({ status }: { status: Status | null }) {
+export default function PriceChart({ status, symbol }: { status: Status | null; symbol: string }) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -56,7 +56,7 @@ export default function PriceChart({ status }: { status: Status | null }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const { bars } = await api<{ bars: Candle[] }>("/api/bars");
+        const { bars } = await api<{ bars: Candle[] }>(`/api/bars?symbol=${encodeURIComponent(symbol)}`);
         if (cancelled || !series.current) return;
         series.current.setData(bars.map((b) => ({ ...b, time: b.time as UTCTimestamp })));
         setError(null);
@@ -70,10 +70,10 @@ export default function PriceChart({ status }: { status: Status | null }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [symbol]);
 
   // Entry and stop of the open position as price lines.
-  const position = status?.position;
+  const position = (status?.positions ?? (status?.position ? [status.position] : [])).find((p) => p.symbol === symbol) ?? null;
   useEffect(() => {
     const s = series.current;
     if (!s) return;
@@ -92,7 +92,7 @@ export default function PriceChart({ status }: { status: Status | null }) {
   return (
     <div className="chart-wrap">
       <div className="panel-title">
-        {status?.symbol ?? "SPY"} · 1 minute · display only (decisions use validated data)
+        {symbol} · 1 minute · display only (decisions use validated data)
       </div>
       {error && <div className="reasons">Chart data unavailable: {error}</div>}
       <div className="chart" ref={container} />

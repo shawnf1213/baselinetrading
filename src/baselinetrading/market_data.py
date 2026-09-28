@@ -146,9 +146,10 @@ class MarketData:
         return matching[0].close
 
     def minute_bars(
-        self, symbol: str, session: Session, start: dt.datetime, end: dt.datetime, *, feed: str
+        self, symbol: str, session: Session, start: dt.datetime, end: dt.datetime, *, feed: str,
+        allow_gaps: bool = False,
     ) -> tuple[Bar, ...]:
-        """Validated 1-minute bars for [start, end) inside `session`, gaps checked."""
+        """Validated 1-minute bars for [start, end) inside `session`, gaps checked unless allow_gaps."""
         if not session.open <= start < end <= session.close:
             raise ValueError(f"window {start} to {end} is not inside the session {session.open} to {session.close}")
         self._guard_holdout(session.date, session.date)
@@ -161,12 +162,15 @@ class MarketData:
                 f"{symbol} {feed} bars {start} to {end}",
                 lambda: self._fetcher.minute_bars(symbol, start, end, feed),
             )
-        return validate_minute_bars(bars, start=start, end=end, max_missing=self._data.max_missing_minutes)
+        max_missing = (end - start) // MINUTE if allow_gaps else self._data.max_missing_minutes
+        return validate_minute_bars(bars, start=start, end=end, max_missing=max_missing)
 
-    def live_minute_bars(self, symbol: str, session: Session, start: dt.datetime) -> tuple[Bar, ...]:
+    def live_minute_bars(
+        self, symbol: str, session: Session, start: dt.datetime, *, allow_gaps: bool = False, fresh: bool = True
+    ) -> tuple[Bar, ...]:
         """Today's bars from `start` up to the last completed minute, on the live feed.
 
-        Checks gaps like any read, and that the newest bar is fresh.
+        Checks gaps (unless allow_gaps) like any read, and that the newest bar is fresh (unless fresh=False).
         """
         now = self._now()
         if session.date != self._today():
@@ -174,8 +178,9 @@ class MarketData:
         end = min(now.replace(second=0, microsecond=0), session.close)
         if end <= start:
             raise DataUnavailable(f"no completed minute yet after {start}")
-        bars = self.minute_bars(symbol, session, start, end, feed=self._data.live_feed)
-        check_fresh(bars, now=now, max_staleness=dt.timedelta(seconds=self._data.max_staleness_seconds))
+        bars = self.minute_bars(symbol, session, start, end, feed=self._data.live_feed, allow_gaps=allow_gaps)
+        if fresh:
+            check_fresh(bars, now=now, max_staleness=dt.timedelta(seconds=self._data.max_staleness_seconds))
         return bars
 
     def daily_closes(self, symbol: str, start: dt.date, end: dt.date) -> dict[dt.date, float]:

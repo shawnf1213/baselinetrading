@@ -60,9 +60,14 @@ def test_the_last_usable_breakout_bar_is_1543():
     assert decision.action == BUY and decision.entry_at == at(DAY, "15:44")
 
 
-def test_a_gap_means_no_trade_and_half_days_are_skipped():
-    bars = tuple(b for b in day_bars(DAY, until="11:00") if b.start != at(DAY, "10:00"))
-    assert decide_orb(DAY, bars).action == NO_TRADE
+def test_a_gap_in_the_range_means_no_trade_but_later_gaps_are_allowed():
+    in_range = tuple(b for b in day_bars(DAY, until="11:00") if b.start != at(DAY, "09:32"))
+    assert decide_orb(DAY, in_range).action == NO_TRADE
+    later = tuple(b for b in day_bars(DAY, until="11:01", **BREAKOUT) if b.start != at(DAY, "10:00"))
+    assert decide_orb(DAY, later).action == BUY
+
+
+def test_half_days_are_skipped():
     half = session(DAY.date, close=dt.time(13, 0))
     assert "half day" in decide_orb(half, day_bars(DAY, until="11:00")).reason
 
@@ -218,3 +223,25 @@ def test_adaptive_backtest_changes_the_range_after_losing_streaks(tmp_path):
     assert trades and all(t.net_bps < 0 for t in trades)
     # Losing every day: 5-minute range for 3 days, then 15, then 30 (and on).
     assert [d.trade.entry for d in results[:3]] == [trades[0].entry] * 3
+
+
+def test_engine_trades_several_symbols_each_with_its_share(tmp_path):
+    cfg = config(strategy="opening_range_breakout", symbols=("SPY", "AAPL"), max_entries_per_day=5)
+    eng, gw, broker, clock, fetcher = engine(tmp_path, clock=Clock("11:01"), cfg=cfg)
+    serve(fetcher, day_bars(SESSION, until="11:01", **BREAKOUT))  # both symbols get the same bars
+    clock.set("11:01", 10)
+    eng.tick()
+    signals = gw.journal.recent(5, {"signal"})
+    assert {s["symbol"] for s in signals} == {"SPY", "AAPL"} and all(s["action"] == "BUY" for s in signals)
+    buys = [m for m in broker.mutations if m[0] == "submit_market"]
+    assert {m[1] for m in buys} == {"SPY", "AAPL"}
+    assert all(m[3] * 500.0 <= 50_000 for m in buys)  # each within its half of the account
+    assert {s["symbol"] for s in eng.status["symbols"]} == {"SPY", "AAPL"}
+    assert len(eng.status["positions"]) == 2
+
+
+def test_per_share_costs_use_the_price_actually_traded():
+    bars = day_bars(DAY, **BREAKOUT)
+    adjusted = simulate_long(DAY, bars, at(DAY, "11:01"), 499.5, at(DAY, "15:55"), config())
+    pre_split = simulate_long(DAY, bars, at(DAY, "11:01"), 499.5, at(DAY, "15:55"), config(), cost_scale=10.0)
+    assert pre_split.cost_bps < adjusted.cost_bps  # 10x the price: a tenth of the shares, a tenth of the spread

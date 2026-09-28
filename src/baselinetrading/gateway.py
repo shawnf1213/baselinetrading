@@ -77,21 +77,37 @@ class OrderGateway:
         self._sleep = sleep
         self._fill_timeout = fill_timeout
         self.lock = threading.RLock()
-        self.health = HealthState()
-        self.open_trade: Trade | None = None
+        self.symbols: tuple[str, ...] = config.trading.symbols
+        self.healths: dict[str, HealthState] = {s: HealthState() for s in self.symbols}  # per symbol
+        self.open_trades: dict[str, Trade] = {}  # one open trade per symbol (the account is split)
         self.closed_trades: list[Trade] = []
         self.entries_today = 0
-        self.decided_today = False
+        self.decided_today = False  # strategy C's single decision
+        self.decided_symbols: set[str] = set()  # the breakout's decision, per symbol
         self._day = self._today()
         self.kill_switch = self._kill_file().exists() if self._kill_file() else False
         self._replay_today()
 
     # --- reads --------------------------------------------------------------------------
 
-    def context(self) -> RiskContext:
+    @property
+    def health(self) -> HealthState:
+        """Data health of the first symbol (the chart's)."""
+        return self.healths[self.symbols[0]]
+
+    @property
+    def open_trade(self) -> Trade | None:
+        """The first open trade, if any (single-symbol callers)."""
+        return next(iter(self.open_trades.values()), None)
+
+    def slice_usd(self, account) -> float:
+        """Each symbol's share of the sizing equity: the account is split equally."""
+        return self.risk.sizing_equity(account) / len(self.symbols)
+
+    def context(self, symbol: str | None = None) -> RiskContext:
         self._roll_day()
         now = self._clock()
-        health = self.health
+        health = self.healths.get(symbol or self.symbols[0]) or HealthState(reason=f"{symbol} is not a traded symbol")
         fresh = health.ok and health.checked_at is not None and now - health.checked_at <= HEALTH_MAX_AGE
         reason = health.reason if not health.ok else "the last data check is too old"
         return RiskContext(
@@ -122,7 +138,7 @@ class OrderGateway:
     ) -> Outcome:
         """Market buy with a mandatory stop: an absolute stop_price (manual) or stop_pct below the fill (strategy)."""
         with self.lock:
-            ctx = self.context()
+            ctx = self.context(symbol)
             price = ctx.reference_price
             if qty is None and notional is not None and price:
                 qty = floor_qty(notional / price)
@@ -164,10 +180,10 @@ class OrderGateway:
         stop = order.stop_price if stop_pct is None else math.floor(entry * (1 - stop_pct / 100) * 100) / 100
         cost = round_trip_cost(self._config.costs, notional_usd=qty * entry, price=entry).total_usd
         trade = Trade(order.source, order.symbol, qty, entry, self._clock().isoformat(), stop, None, cost)
-        self.open_trade = trade
+        self.open_trades[order.symbol] = trade
         if stop >= entry:
             self.journal.record("unprotected", order.source, reason=f"stop {stop} is not below the fill {entry}")
-            self._close_everything(order.source, "stop would be above the fill")
+            self._close_everything(order.source, "stop would be above the fill", order.symbol)
             return Outcome(False, f"filled at {entry} but the stop {stop} is not below it; position closed")
         for attempt in range(1, STOP_ATTEMPTS + 1):
             try:
@@ -180,7 +196,7 @@ class OrderGateway:
             except Exception as exc:
                 self.journal.record("error", order.source, where="stop", attempt=attempt, error=str(exc))
         self.journal.record("unprotected", order.source, reason="stop could not be placed; closing the position")
-        self._close_everything(order.source, "stop could not be placed")
+        self._close_everything(order.source, "stop could not be placed", order.symbol)
         return Outcome(False, "stop could not be placed; position closed")
 
     def _wait_for_fill(self, order: OrderSnapshot) -> OrderSnapshot:
@@ -192,12 +208,15 @@ class OrderGateway:
 
     # --- exits and the kill switch --------------------------------------------------------
 
-    def exit_all(self, source: str, reason: str) -> Outcome:
+    def exit_all(self, source: str, reason: str, symbol: str | None = None) -> Outcome:
+        """Close every position, or only `symbol`'s."""
         with self.lock:
             ctx = self.context()
-            self.journal.record("order_request", source, side="exit_all", reason=reason)
+            self.journal.record("order_request", source, side="exit_all" if symbol is None else "exit", symbol=symbol,
+                                reason=reason)
             try:
-                execution = self.risk.execute(ExitOrder(source, reason), ctx, lambda: self._close_everything(source, reason))
+                execution = self.risk.execute(ExitOrder(source, reason, symbol), ctx,
+                                              lambda: self._close_everything(source, reason, symbol))
             except Exception as exc:
                 self.journal.record("error", source, where="exit", error=f"{type(exc).__name__}: {exc}")
                 return Outcome(False, f"exit failed: {exc}")
@@ -228,11 +247,18 @@ class OrderGateway:
                 self._kill_file().unlink()
             self.journal.record("kill_switch_reset", "manual")
 
-    def _close_everything(self, source: str, reason: str) -> Outcome:
-        """Cancel all orders first (a working stop holds the shares), then close every position."""
-        self._broker.cancel_all()
+    def _close_everything(self, source: str, reason: str, symbol: str | None = None) -> Outcome:
+        """Cancel orders first (a working stop holds the shares), then close positions: all, or one symbol's."""
+        if symbol is None:
+            self._broker.cancel_all()
+        else:
+            for order in self._broker.open_orders():
+                if order.symbol == symbol:
+                    self._broker.cancel_order(order.id)
         closed = []
         for position in self._broker.positions():
+            if symbol is not None and position.symbol != symbol:
+                continue
             order = self._broker.close_position(position.symbol)
             if order is not None:
                 order = self._wait_for_fill(order)
@@ -241,8 +267,8 @@ class OrderGateway:
                 price = None
             closed.append(position.symbol)
             self.journal.record("exit", source, symbol=position.symbol, qty=position.qty, price=price, reason=reason)
-            if self.open_trade and self.open_trade.symbol == position.symbol:
-                self._finish_trade(price if price is not None else position.current_price, reason)
+            if position.symbol in self.open_trades:
+                self._finish_trade(position.symbol, price if price is not None else position.current_price, reason)
         message = f"closed {', '.join(closed)}" if closed else "no positions to close"
         return Outcome(True, message, details={"reason": reason})
 
@@ -252,15 +278,16 @@ class OrderGateway:
         """Match our trade record to the broker, and never leave a position without a stop."""
         with self.lock:
             positions = {p.symbol: p for p in self._broker.positions()}
-            trade = self.open_trade
-            if trade and trade.symbol not in positions:
+            for trade in list(self.open_trades.values()):
+                if trade.symbol in positions:
+                    continue
                 price, reason = None, "closed outside this app"
                 if trade.stop_order_id:
                     stop = self._broker.get_order(trade.stop_order_id)
                     if stop.status == "filled":
                         price, reason = stop.filled_avg_price, "stop hit"
                 self.journal.record("exit", trade.source, symbol=trade.symbol, qty=trade.qty, price=price, reason=reason)
-                self._finish_trade(price if price is not None else trade.entry_price, reason)
+                self._finish_trade(trade.symbol, price if price is not None else trade.entry_price, reason)
             open_orders = self._broker.open_orders()
             for symbol, position in positions.items():
                 covered = sum(o.qty for o in open_orders if o.symbol == symbol and o.side == "sell" and o.type == "stop")
@@ -271,13 +298,12 @@ class OrderGateway:
 
     # --- internals -------------------------------------------------------------------------
 
-    def _finish_trade(self, price: float, reason: str) -> None:
-        trade = self.open_trade
+    def _finish_trade(self, symbol: str, price: float, reason: str) -> None:
+        trade = self.open_trades.pop(symbol, None)
         if trade is None:
             return
         trade.exit_price, trade.exit_time, trade.exit_reason = price, self._clock().isoformat(), reason
         self.closed_trades.append(trade)
-        self.open_trade = None
         self._persist_trade("trade_closed", trade)
 
     def _persist_trade(self, kind: str, trade: Trade) -> None:
@@ -290,7 +316,10 @@ class OrderGateway:
             if kind == "order_submitted" and event.get("side") == "buy":
                 self.entries_today += 1
             elif kind == "signal":
-                self.decided_today = True
+                if event.get("symbol"):
+                    self.decided_symbols.add(event["symbol"])
+                else:
+                    self.decided_today = True
             elif kind in ("trade_opened", "trade_closed"):
                 trade = Trade(**event["trade"])
                 if kind == "trade_opened":
@@ -298,13 +327,14 @@ class OrderGateway:
                 else:
                     opened.pop(trade.entry_time, None)
                     self.closed_trades.append(trade)
-        if opened:
-            self.open_trade = list(opened.values())[-1]
+        for trade in opened.values():
+            self.open_trades[trade.symbol] = trade
 
     def _roll_day(self) -> None:
         today = self._today()
         if today != self._day:
             self._day, self.entries_today, self.decided_today, self.closed_trades = today, 0, False, []
+            self.decided_symbols = set()
 
     def _today(self) -> dt.date:
         return self._clock().astimezone(ET).date()

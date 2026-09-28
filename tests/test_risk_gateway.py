@@ -100,12 +100,27 @@ def test_an_entry_without_a_valid_stop_is_vetoed(tmp_path, stop):
     assert broker.mutations == []
 
 
-def test_one_position_at_a_time(tmp_path):
+def test_one_position_per_symbol(tmp_path):
     gw, broker, _ = gateway(tmp_path, cfg=config(max_entries_per_day=5))
     assert buy(gw, qty=10).ok
     second = buy(gw, source="strategy", qty=10)
-    assert not second.ok and any("one position at a time" in r for r in second.reasons)
+    assert not second.ok and any("one position per symbol" in r for r in second.reasons)
     assert len([m for m in broker.mutations if m[0] == "submit_market"]) == 1
+
+
+def test_the_account_is_split_and_symbols_trade_side_by_side(tmp_path):
+    from tests.helpers import mark_healthy
+
+    gw, broker, clock = gateway(tmp_path, cfg=config(symbols=("SPY", "AAPL"), max_entries_per_day=5))
+    mark_healthy(gw, clock, broker.price)
+    gw.healths["AAPL"].ok, gw.healths["AAPL"].checked_at, gw.healths["AAPL"].price = True, clock(), broker.price
+    too_big = gw.submit_entry("manual", "SPY", qty=120, stop_price=499.0)  # $60k > half of $100k
+    assert not too_big.ok and any("share of the account" in r for r in too_big.reasons)
+    assert gw.submit_entry("manual", "SPY", qty=90, stop_price=499.0).ok
+    assert gw.submit_entry("strategy", "AAPL", qty=90, stop_price=499.0).ok
+    assert set(gw.open_trades) == {"SPY", "AAPL"}
+    assert gw.exit_all("manual", "just SPY", symbol="SPY").ok
+    assert [p.symbol for p in broker.positions()] == ["AAPL"] and set(gw.open_trades) == {"AAPL"}
 
 
 def test_manual_and_strategy_share_the_daily_entry_limit(tmp_path):
@@ -134,7 +149,7 @@ def test_risk_per_trade_is_capped_at_two_percent(tmp_path):
 def test_no_leverage_even_though_buying_power_is_four_times_cash(tmp_path):
     gw, broker, _ = gateway(tmp_path)
     outcome = buy(gw, qty=300, stop=499.0)  # $150k
-    assert not outcome.ok and any("no leverage" in r for r in outcome.reasons)
+    assert not outcome.ok and any("share of the account" in r for r in outcome.reasons)
 
 
 def test_stale_or_unhealthy_data_blocks_entries(tmp_path):

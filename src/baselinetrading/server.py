@@ -5,9 +5,9 @@
 
 Routes (all but /api/health need the token):
     GET  /api/status               everything the UI shows, incl. why the bot is disarmed
-    GET  /api/bars                 chart bars (display only, never used for decisions)
+    GET  /api/bars?symbol=...      chart bars (display only, never used for decisions)
     POST /api/orders               the ONE manual order route: buy with a mandatory stop
-    POST /api/positions/close      close the position (manual exit)
+    POST /api/positions/close      close one symbol's position, or all of them (manual exit)
     POST /api/kill                 kill switch: cancel everything, flatten, block entries
     POST /api/kill/reset           re-allow entries
     WS   /ws?token=...             status pushed every few seconds
@@ -102,6 +102,7 @@ class BuyRequest(BaseModel):
 
 class CloseRequest(BaseModel):
     reason: str = "manual close"
+    symbol: str | None = None  # None: every position
 
 
 class Confirm(BaseModel):
@@ -170,20 +171,23 @@ def create_app(runtime_factory=build_runtime, *, token: str | None = None, start
         return status_of(request.app.state.runtime)
 
     @app.get("/api/bars", dependencies=[Depends(authorized)])
-    def bars(request: Request) -> dict[str, Any]:
+    def bars(request: Request, symbol: str | None = None) -> dict[str, Any]:
         runtime: Runtime = request.app.state.runtime
         if runtime.engine is None:
             raise HTTPException(503, "not running")
         engine = runtime.engine
+        symbol = symbol or engine.symbol
+        if symbol not in engine.symbols:
+            raise HTTPException(400, f"{symbol} is not a traded symbol")
         now = dt.datetime.now(ET)
         try:
             sessions = [s for s in engine.data.sessions(now.date() - dt.timedelta(days=7), now.date()) if s.open <= now]
             out = []
             for session in sessions[-2:]:
-                out += engine.data.display_bars(engine.symbol, session, now)
+                out += engine.data.display_bars(symbol, session, now)
         except Exception as exc:
             raise HTTPException(502, f"chart data unavailable: {exc}") from None
-        return {"symbol": engine.symbol, "bars": [
+        return {"symbol": symbol, "bars": [
             {"time": int(b.start.timestamp()), "open": b.open, "high": b.high, "low": b.low, "close": b.close,
              "volume": b.volume} for b in out]}
 
@@ -199,7 +203,7 @@ def create_app(runtime_factory=build_runtime, *, token: str | None = None, start
     @app.post("/api/positions/close", dependencies=[Depends(authorized)])
     async def close_position(body: CloseRequest, request: Request) -> JSONResponse:
         gw = gateway(request)
-        result = await asyncio.to_thread(gw.exit_all, "manual", body.reason)
+        result = await asyncio.to_thread(gw.exit_all, "manual", body.reason, body.symbol)
         await refresh(request)
         return outcome(result)
 

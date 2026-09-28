@@ -36,6 +36,7 @@ class OrbSpec:
     range_end: dt.time = dt.time(9, 35)
     last_entry: dt.time = dt.time(15, 45)  # the entry (next bar's open) must be before this
     exit_time: dt.time = dt.time(15, 55)
+    gaps_after_range: str = "allowed"  # v2 (2026-09-28): missing minutes after the range can't trigger, don't cancel
 
     def fingerprint(self) -> str:
         text = json.dumps({k: str(v) for k, v in asdict(self).items()}, sort_keys=True)
@@ -64,6 +65,7 @@ class AdaptiveOrbSpec:
     range_start: dt.time = dt.time(9, 30)
     last_entry: dt.time = dt.time(15, 45)
     exit_time: dt.time = dt.time(15, 55)
+    gaps_after_range: str = "allowed"
 
     def fingerprint(self) -> str:
         text = json.dumps({k: str(v) for k, v in asdict(self).items()}, sort_keys=True)
@@ -111,12 +113,17 @@ class OrbDecision:
     entry_at: dt.datetime | None = None  # set only for BUY: the bar whose open is the entry
 
 
-def decide_orb(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC) -> OrbDecision:
-    """The breakout decision from gap-free 1-minute bars starting at 09:30.
+def decide_orb(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC,
+               *, until: dt.datetime | None = None) -> OrbDecision:
+    """The breakout decision from 1-minute bars starting at 09:30.
 
-    `bars` are the bars that existed at the time of the decision. Only the
-    first breakout counts; bars after it are never read, so passing a whole
-    day (as the backtest does) can't leak the future into the decision.
+    `bars` are the bars that existed at the time of the decision, and `until`
+    is the end of the last completed minute (default: the last bar's end).
+    The opening range must be complete, with no missing minute. After it,
+    missing minutes are allowed: on the free IEX feed a single stock often has
+    minutes without an IEX trade, and a minute with no bar simply can't be a
+    breakout. Only the first breakout counts and later bars are never read, so
+    passing a whole day (as the backtest does) can't leak the future.
     """
 
     def result(action: str, reason: str, inputs: OrbInputs | None = None, **kw) -> OrbDecision:
@@ -127,24 +134,28 @@ def decide_orb(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC
     start = spec.at(session, spec.range_start)
     range_end = spec.at(session, spec.range_end)
     last_breakout_end = spec.at(session, spec.last_entry) - MINUTE  # entry at that bar's open, before the cutoff
-    if not bars or bars[-1].end < range_end:
+    until = until or (bars[-1].end if bars else start)
+    if until < range_end:
         return result(WAIT, "the opening range isn't complete yet")
-    problem = _window_problem(bars, start, bars[-1].end)
+    opening = tuple(b for b in bars if b.start < range_end)
+    problem = _window_problem(opening, start, range_end)
     if problem:
-        return result(NO_TRADE, f"bars: {problem}")
+        return result(NO_TRADE, f"opening range: {problem}")
+    later = [b for b in bars if b.start >= range_end]
+    if [b.start for b in later] != sorted({b.start for b in later}):
+        return result(NO_TRADE, "bars after the opening range are duplicated or out of order")
 
-    opening = [b for b in bars if b.end <= range_end]
     high, low = max(b.high for b in opening), min(b.low for b in opening)
     base = dict(range_high=high, range_low=low, range_pct=(high - low) / low * 100,
                 range_volume=sum(b.volume for b in opening))
-    for bar in bars[len(opening):]:
-        if bar.end > last_breakout_end:
+    for bar in later:
+        if bar.end > min(last_breakout_end, until):
             break
         if bar.close > high:
             inputs = OrbInputs(**base, breakout_time=_hm(bar.start), breakout_close=bar.close)
             return result(BUY, f"{_hm(bar.start)} bar closed at {bar.close:.2f}, above the range high {high:.2f}",
                           inputs, stop_price=low, entry_at=bar.end)
     inputs = OrbInputs(**base, breakout_time=None, breakout_close=None)
-    if bars[-1].end >= last_breakout_end:
+    if until >= last_breakout_end:
         return result(NO_TRADE, f"no close above the range high {high:.2f} before {_hm(last_breakout_end)}", inputs)
     return result(WAIT, f"watching for a close above {high:.2f} (stop would be {low:.2f})", inputs)

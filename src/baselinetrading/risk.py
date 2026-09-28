@@ -1,5 +1,8 @@
 """The risk manager: one veto for every order, manual or strategy.
 
+The account is split equally over the allowed symbols: at most one position
+per symbol, each no bigger than its share of the sizing equity.
+
 RiskManager.execute(request, context, send) is the only place a broker-changing
 call can happen: it evaluates the request and runs `send` inside its own frame
 only if approved (broker.requires_risk_manager checks for exactly that frame).
@@ -126,10 +129,6 @@ class RiskManager:
                 reasons.append(f"no new entries in the last {risk.no_new_entries_minutes_before_close} minutes")
         if not ctx.data_ok:
             reasons.append(f"market data is not healthy: {ctx.data_reason}")
-        if ctx.positions:
-            reasons.append(f"one position at a time: already holding {', '.join(p.symbol for p in ctx.positions)}")
-        if any(o.side == "buy" for o in ctx.open_orders):
-            reasons.append("a buy order is already working")
         if ctx.entries_today >= risk.max_entries_per_day:
             reasons.append(f"entry limit reached: {ctx.entries_today} of {risk.max_entries_per_day} today")
         if self.loss_limit_hit(ctx.account):
@@ -144,8 +143,13 @@ class RiskManager:
         metrics: dict[str, float] = {}
         if order.source not in SOURCES:
             reasons.append(f"unknown order source {order.source!r}")
-        if order.symbol not in self._config.trading.symbols:
-            reasons.append(f"{order.symbol} is not in the allowed symbols {list(self._config.trading.symbols)}")
+        symbols = self._config.trading.symbols
+        if order.symbol not in symbols:
+            reasons.append(f"{order.symbol} is not in the allowed symbols {list(symbols)}")
+        if any(p.symbol == order.symbol for p in ctx.positions):
+            reasons.append(f"one position per symbol: already holding {order.symbol}")
+        if any(o.side == "buy" and o.symbol == order.symbol for o in ctx.open_orders):
+            reasons.append(f"a buy order for {order.symbol} is already working")
         price = ctx.reference_price
         if price is None or not (math.isfinite(price) and price > 0):
             reasons.append("no valid live reference price")
@@ -168,8 +172,11 @@ class RiskManager:
         )
         if notional < MIN_NOTIONAL_USD:
             reasons.append(f"order value ${notional:,.2f} is below the ${MIN_NOTIONAL_USD:.0f} minimum")
-        if notional > sizing:
-            reasons.append(f"order value ${notional:,.2f} exceeds sizing equity ${sizing:,.2f} (no leverage)")
+        share = sizing / len(symbols)
+        metrics.update(symbol_share_usd=share)
+        if notional > share:
+            reasons.append(f"order value ${notional:,.2f} exceeds {order.symbol}'s share of the account "
+                           f"${share:,.2f} (sizing equity split over {len(symbols)} symbols)")
         if notional > ctx.account.cash:
             reasons.append(f"order value ${notional:,.2f} exceeds cash ${ctx.account.cash:,.2f} (no margin)")
         if trade_risk > max_risk:

@@ -1,0 +1,32 @@
+=== TSLA ===
+BACKTEST: adaptive-opening-range-breakout (0fdc4b1982b381f4) on in_sample, feed sip, $12,500 account
+BREAKEVEN WIN RATE: 42.6%  (avg net win 163.42 bp, avg net loss 121.09 bp; costs 3.00 bp per round trip)
+Trials so far (distinct specs): 3; significance level 0.0170 (Šidák), confidence 98.30%
+
+Days: 1259   trades: 710   no-trade: 533   skipped: 16
+   skipped, data unavailable: 2
+   skipped, half day: 11
+   skipped, opening range: 3
+Stop exits: 154
+
+Strategy, net of costs
+   win rate 52.1% (370/710), 98% CI 47.6%-56.6%; breakeven 42.6% -> ABOVE breakeven
+   mean net per trade +27.18 bp, 95% bootstrap CI +12.21 to +42.04 bp
+   mean gross per trade +30.18 bp
+   total net P&L $+23,636.54 (+189.09% of the account, no compounding)
+
+B1. No-change forecast: do signal days move up after the entry more than zero?
+   + 1 min: mean +1.15 bp (95% CI -0.36 to +2.71)
+   + 5 min: mean +6.00 bp (95% CI +2.92 to +8.90)
+   +15 min: mean +10.03 bp (95% CI +4.59 to +15.61)
+   to exit: gross +30.18 bp (CI +15.28 to +45.02); net CI excludes zero -> PASS
+
+B2. Buy-and-hold over the same period
+   no close before 2016-01-04: buy-and-hold starts at that day's open, 15.38
+   (a) close-to-close buy-and-hold, net: +1429.30%   strategy: +192.95% -> FAIL
+   (b) open-to-15:55 every day, gross, diagnostic only: +126.47%
+
+B3. Random entries: the same trade on randomly chosen days (same count, size, hold, costs)
+   always-long mean +6.56 bp over 1243 days; p = 0.0005 vs level 0.0170 -> PASS
+
+EDGE: NONE, not all three baselines beaten (B1 pass, B2 fail, B3 pass)

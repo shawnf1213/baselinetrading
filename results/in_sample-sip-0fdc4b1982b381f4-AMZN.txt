@@ -1,0 +1,32 @@
+=== AMZN ===
+BACKTEST: adaptive-opening-range-breakout (0fdc4b1982b381f4) on in_sample, feed sip, $12,500 account
+BREAKEVEN WIN RATE: 44.6%  (avg net win 81.95 bp, avg net loss 65.89 bp; costs 2.87 bp per round trip)
+Trials so far (distinct specs): 3; significance level 0.0170 (Šidák), confidence 98.30%
+
+Days: 1259   trades: 746   no-trade: 497   skipped: 16
+   skipped, data unavailable: 2
+   skipped, half day: 11
+   skipped, opening range: 3
+Stop exits: 207
+
+Strategy, net of costs
+   win rate 49.3% (368/746), 98% CI 45.0%-53.7%; breakeven 44.6% -> ABOVE breakeven
+   mean net per trade +7.04 bp, 95% bootstrap CI +0.15 to +14.17 bp
+   mean gross per trade +9.91 bp
+   total net P&L $+6,433.28 (+51.47% of the account, no compounding)
+
+B1. No-change forecast: do signal days move up after the entry more than zero?
+   + 1 min: mean +0.70 bp (95% CI +0.01 to +1.38)
+   + 5 min: mean +0.62 bp (95% CI -0.96 to +2.09)
+   +15 min: mean +2.59 bp (95% CI +0.23 to +5.03)
+   to exit: gross +9.91 bp (CI +2.98 to +17.19); net CI excludes zero -> PASS
+
+B2. Buy-and-hold over the same period
+   no close before 2016-01-04: buy-and-hold starts at that day's open, 32.81
+   (a) close-to-close buy-and-hold, net: +396.29%   strategy: +52.52% -> FAIL
+   (b) open-to-15:55 every day, gross, diagnostic only: -7.77%
+
+B3. Random entries: the same trade on randomly chosen days (same count, size, hold, costs)
+   always-long mean -1.37 bp over 1243 days; p = 0.0005 vs level 0.0170 -> PASS
+
+EDGE: NONE, not all three baselines beaten (B1 pass, B2 fail, B3 pass)
