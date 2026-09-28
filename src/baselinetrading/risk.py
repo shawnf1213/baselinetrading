@@ -68,6 +68,7 @@ class OptionEntryOrder:
     ask: float
     stop_underlying: float
     max_spread_pct: float
+    kind: str = "call"  # call: the stop is below the stock; put: above it
 
 
 @dataclass(frozen=True)
@@ -232,8 +233,12 @@ class RiskManager:
         if not (float(order.qty).is_integer() and order.qty >= 1):
             reasons.append(f"options trade in whole contracts; the budget buys {order.qty!r}")
             return Verdict(False, tuple(reasons), metrics)
-        if not (math.isfinite(order.stop_underlying) and 0 < order.stop_underlying < price):
-            reasons.append(f"the stop on {order.underlying} must be below its price {price:.2f}, got {order.stop_underlying!r}")
+        stop_ok = math.isfinite(order.stop_underlying) and order.stop_underlying > 0 and (
+            order.stop_underlying < price if order.kind == "call" else order.stop_underlying > price)
+        if not stop_ok:
+            where = "below" if order.kind == "call" else "above"
+            reasons.append(f"the stop on {order.underlying} must be {where} its price {price:.2f} for a {order.kind}, "
+                           f"got {order.stop_underlying!r}")
         spread_pct = (order.ask - order.bid) / order.ask * 100
         if spread_pct > order.max_spread_pct:
             reasons.append(f"{order.contract} spread {spread_pct:.1f}% of the ask is wider than {order.max_spread_pct:g}%")

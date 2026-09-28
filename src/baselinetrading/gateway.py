@@ -27,7 +27,9 @@ from baselinetrading.broker import Broker, OrderSnapshot, floor_qty
 from baselinetrading.config import Config
 from baselinetrading.costs import round_trip_cost
 from baselinetrading.journal import Journal, Trade
-from baselinetrading.options import MULTIPLIER, OPTION_SPEC, OptionSpec, choose_call, contracts_for, is_option, underlying_of
+from baselinetrading.options import (
+    MULTIPLIER, OPTION_SPEC, OptionSpec, choose_call, choose_put, contracts_for, is_option, underlying_of,
+)
 from baselinetrading.risk import EntryOrder, ExitOrder, KillOrder, OptionEntryOrder, RiskContext, RiskManager
 
 FILL_TIMEOUT_SECONDS = 15.0
@@ -204,8 +206,8 @@ class OrderGateway:
         return Outcome(False, "stop could not be placed; position closed")
 
     def submit_option_entry(self, source: str, underlying: str, *, stop_underlying: float, budget_usd: float,
-                            inputs: Any = None, spec: OptionSpec = OPTION_SPEC) -> Outcome:
-        """Buy calls on `underlying` for up to budget_usd of premium; the engine manages the stop on the stock."""
+                            inputs: Any = None, spec: OptionSpec = OPTION_SPEC, kind: str = "call") -> Outcome:
+        """Buy calls (or puts) on `underlying` for up to budget_usd of premium; the engine manages the stop on the stock."""
         with self.lock:
             ctx = self.context(underlying)
             price = ctx.reference_price
@@ -214,19 +216,20 @@ class OrderGateway:
                 contract = None
                 if price:
                     contracts = self._broker.option_contracts(
-                        underlying, today + dt.timedelta(days=spec.min_days), today + dt.timedelta(days=spec.max_days))
-                    contract = choose_call(contracts, price, today, spec)
+                        underlying, today + dt.timedelta(days=spec.min_days), today + dt.timedelta(days=spec.max_days), kind)
+                    contract = (choose_call if kind == "call" else choose_put)(contracts, price, today, spec)
                 if contract is None:
-                    self.journal.record("veto", source, symbol=underlying, reasons=[f"no call on {underlying} "
-                                        f"{spec.min_days}-{spec.max_days} days out at or above {price}"])
-                    return Outcome(False, f"no suitable call on {underlying}")
+                    self.journal.record("veto", source, symbol=underlying, reasons=[f"no {kind} on {underlying} "
+                                        f"{spec.min_days}-{spec.max_days} days out near {price}"])
+                    return Outcome(False, f"no suitable {kind} on {underlying}")
                 bid, ask = self._broker.option_quote(contract.symbol)
             except Exception as exc:
                 self.journal.record("error", source, where="option lookup", error=f"{type(exc).__name__}: {exc}")
                 return Outcome(False, f"option lookup failed: {exc}")
             qty = contracts_for(budget_usd, ask)
             order = OptionEntryOrder(source, underlying, contract.symbol, float(qty), bid, ask,
-                                     math.floor(stop_underlying * 100) / 100, spec.max_spread_pct)
+                                     (math.floor if kind == "call" else math.ceil)(stop_underlying * 100) / 100,
+                                     spec.max_spread_pct, kind)
             self.journal.record("order_request", source, symbol=contract.symbol, underlying=underlying, side="buy",
                                 qty=qty, bid=bid, ask=ask, stop_underlying=order.stop_underlying,
                                 reference_price=price, inputs=inputs, option_spec=spec.fingerprint())
@@ -262,8 +265,9 @@ class OrderGateway:
                       underlying=order.underlying, stop_underlying=order.stop_underlying, multiplier=MULTIPLIER)
         self.open_trades[order.underlying] = trade
         self._persist_trade("trade_opened", trade)
+        where = "at or below" if order.kind == "call" else "at or above"
         return Outcome(True, f"bought {qty:g} {order.contract} at {entry:.2f}; sells if {order.underlying} "
-                             f"trades at or below {order.stop_underlying:.2f}",
+                             f"trades {where} {order.stop_underlying:.2f}",
                        details={"qty": qty, "entry": entry, "contract": order.contract})
 
     def _wait_for_fill(self, order: OrderSnapshot) -> OrderSnapshot:
@@ -320,11 +324,11 @@ class OrderGateway:
             self._broker.cancel_all()
         else:
             for order in self._broker.open_orders():
-                if underlying_of(order.symbol) == symbol:
+                if symbol in (order.symbol, underlying_of(order.symbol)):
                     self._broker.cancel_order(order.id)
         closed = []
         for position in self._broker.positions():
-            if symbol is not None and underlying_of(position.symbol) != symbol:
+            if symbol is not None and symbol not in (position.symbol, underlying_of(position.symbol)):
                 continue
             order = self._broker.close_position(position.symbol)
             if order is not None:
@@ -393,7 +397,7 @@ class OrderGateway:
             if kind == "order_submitted" and event.get("side") == "buy":
                 self.entries_today += 1
             elif kind == "signal":
-                if event.get("symbol") and event.get("action") == "BUY":
+                if event.get("symbol") and event.get("action") in ("BUY", "BUY_PUT"):
                     self.symbol_buys[event["symbol"]] = self.symbol_buys.get(event["symbol"], 0) + 1
                 elif event.get("symbol"):
                     self.decided_symbols.add(event["symbol"])

@@ -140,11 +140,13 @@ class FakeBroker:
 
     option_bid, option_ask = 4.90, 5.00  # every contract's quote; market orders on options fill at the ask
 
-    def option_contracts(self, underlying, expires_from, expires_to):
+    def option_contracts(self, underlying, expires_from, expires_to, kind="call"):
         from baselinetrading.options import Contract
 
         expiry = expires_from + dt.timedelta(days=2)
-        return [Contract(f"{underlying}{expiry:%y%m%d}C{int(k * 1000):08d}", expiry, float(k)) for k in (495, 500, 505, 510)]
+        letter = "C" if kind == "call" else "P"
+        return [Contract(f"{underlying}{expiry:%y%m%d}{letter}{int(k * 1000):08d}", expiry, float(k))
+                for k in (490, 495, 500, 505, 510)]
 
     def option_quote(self, symbol):
         return self.option_bid, self.option_ask

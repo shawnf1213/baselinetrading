@@ -25,6 +25,7 @@ from baselinetrading.bars import ET, MINUTE, Bar, Session
 from baselinetrading.strategy import BUY, NO_TRADE, _hm, _window_problem
 
 WAIT = "WAIT"
+BUY_PUT = "BUY_PUT"  # a fresh cross below the range low: only tradable with puts
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,7 @@ def decide_orb(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC
 
 
 def find_cross(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC, *,
-               after: dt.datetime, until: dt.datetime) -> OrbDecision:
+               after: dt.datetime, until: dt.datetime, direction: str = "up") -> OrbDecision:
     """The first fresh cross above the opening range high among bars starting at or after `after`.
 
     A fresh cross is a bar that closes above the range high while the bar
@@ -180,6 +181,10 @@ def find_cross(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC
     stop-out, and let an engine that started late wait for the next one
     instead of skipping the day. Bars ending after `until` or after the last
     entry time are never read.
+
+    direction="down" is the mirror image, for puts: a close below the range
+    low after a close at or above it gives BUY_PUT, with the range high as
+    the stop.
     """
 
     def result(action: str, reason: str, inputs: OrbInputs | None = None, **kw) -> OrbDecision:
@@ -205,11 +210,19 @@ def find_cross(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC
             continue
         if bar.end > min(last_breakout_end, until):
             break
-        if bar.close > high and ordered[i - 1].close <= high:
+        prev = ordered[i - 1].close
+        if direction == "up" and bar.close > high and prev <= high:
             inputs = OrbInputs(**base, breakout_time=_hm(bar.start), breakout_close=bar.close)
             return result(BUY, f"{_hm(bar.start)} bar closed at {bar.close:.2f}, crossing the range high {high:.2f}",
                           inputs, stop_price=low, entry_at=bar.end)
+        if direction == "down" and bar.close < low and prev >= low:
+            inputs = OrbInputs(**base, breakout_time=_hm(bar.start), breakout_close=bar.close)
+            return result(BUY_PUT, f"{_hm(bar.start)} bar closed at {bar.close:.2f}, crossing below the range low {low:.2f}",
+                          inputs, stop_price=high, entry_at=bar.end)
     inputs = OrbInputs(**base, breakout_time=None, breakout_close=None)
+    level = f"above the range high {high:.2f}" if direction == "up" else f"below the range low {low:.2f}"
     if until >= last_breakout_end:
-        return result(NO_TRADE, f"no fresh cross above the range high {high:.2f} before {_hm(last_breakout_end)}", inputs)
-    return result(WAIT, f"watching for a cross above {high:.2f} (stop would be {low:.2f})", inputs)
+        return result(NO_TRADE, f"no fresh cross {level} before {_hm(last_breakout_end)}", inputs)
+    if direction == "up":
+        return result(WAIT, f"watching for a cross above {high:.2f} (stop would be {low:.2f})", inputs)
+    return result(WAIT, f"watching for a cross below {low:.2f} (stop would be {high:.2f})", inputs)

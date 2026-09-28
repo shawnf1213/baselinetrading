@@ -64,6 +64,20 @@ def choose_call(contracts: list[Contract], price: float, today: dt.date, spec: O
     return min((c for c in eligible if c.expiration == expiry), key=lambda c: c.strike)
 
 
+def choose_put(contracts: list[Contract], price: float, today: dt.date, spec: OptionSpec = OPTION_SPEC) -> Contract | None:
+    """The mirror of choose_call: earliest expiry in range, and in it the highest strike at or below the price."""
+    eligible = [c for c in contracts if spec.min_days <= (c.expiration - today).days <= spec.max_days and c.strike <= price]
+    if not eligible:
+        return None
+    expiry = min(c.expiration for c in eligible)
+    return max((c for c in eligible if c.expiration == expiry), key=lambda c: c.strike)
+
+
+def is_put(symbol: str) -> bool:
+    m = OCC_SYMBOL.match(symbol)
+    return bool(m) and m.group("kind") == "P"
+
+
 def contracts_for(budget_usd: float, ask: float) -> int:
     """Whole contracts affordable within the budget at the ask (0 if none)."""
     if not (math.isfinite(ask) and ask > 0 and budget_usd > 0):

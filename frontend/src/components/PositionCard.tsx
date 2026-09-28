@@ -44,7 +44,7 @@ export default function PositionCard({ status, extraReasons, onDone }: { status:
                 <td title={p.source}>{p.symbol}</td>
                 <td>{num(p.qty, 4)}</td>
                 <td>{usd(p.entry)}</td>
-                <td className={p.stop === null ? "bad" : ""}>{p.stop === null ? "NONE" : usd(p.stop)}</td>
+                <td className={p.stop === null && !p.stop_note ? "bad" : ""}>{p.stop_note ?? (p.stop === null ? "NONE" : usd(p.stop))}</td>
                 <td>{usd(p.price)}</td>
                 <td className={tone(p.unrealized_pl)}>{usd(p.unrealized_pl, true)}</td>
                 <td>

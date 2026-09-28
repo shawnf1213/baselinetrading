@@ -26,7 +26,8 @@ from baselinetrading.costs import round_trip_cost
 from baselinetrading.gateway import OrderGateway
 from baselinetrading.journal import summarize
 from baselinetrading.market_data import MarketData
-from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, WAIT, OrbSpec, find_cross
+from baselinetrading.options import is_put
+from baselinetrading.orb import ADAPTIVE_ORB_SPEC, BUY_PUT, ORB_SPEC, WAIT, OrbSpec, find_cross
 from baselinetrading.strategy import BUY, NO_TRADE, SPEC, Decision, StrategySpec, decide_from_data
 
 TICK_SECONDS = 5.0  # ~10 broker reads per tick; Alpaca allows 200 requests a minute
@@ -176,8 +177,12 @@ class Engine:
             if not trade.stop_underlying:
                 continue
             health = self.gateway.healths.get(key)
-            if health and health.ok and health.price is not None and health.price <= trade.stop_underlying:
-                self.gateway.exit_all("system", f"{key} traded at {health.price:.2f}, at or below the stop "
+            if not (health and health.ok and health.price is not None):
+                continue
+            put = is_put(trade.symbol)
+            if (health.price >= trade.stop_underlying) if put else (health.price <= trade.stop_underlying):
+                where = "at or above" if put else "at or below"
+                self.gateway.exit_all("system", f"{key} traded at {health.price:.2f}, {where} the stop "
                                                 f"{trade.stop_underlying:.2f}", symbol=key)
 
     def _maybe_decide(self, session: Session | None, now: dt.datetime) -> None:
@@ -242,19 +247,27 @@ class Engine:
             except DataUnavailable as exc:  # retried next minute; the status shows why
                 self.watching[symbol] = f"data unavailable: {exc}"
                 continue
+            options = self._config.trading.instrument == "options"
             decision = find_cross(session, bars, spec, after=minute - MINUTE, until=minute)
+            if options and decision.action == WAIT:  # puts: the mirror image, a cross below the range low
+                down = find_cross(session, bars, spec, after=minute - MINUTE, until=minute, direction="down")
+                if down.action == BUY_PUT:
+                    decision = down
+                else:
+                    decision = type(decision)(decision.date, WAIT, f"{decision.reason}; or below {down.inputs.range_low:.2f} "
+                                              f"for puts" if down.inputs else decision.reason, decision.inputs)
             if decision.action == WAIT:
                 self.watching[symbol] = decision.reason + (f"; entries today {buys} of {spec.max_entries}" if buys else "")
                 continue
             self.watching.pop(symbol, None)
             self._record(decision, symbol)
-            if decision.action == BUY:
+            if decision.action in (BUY, BUY_PUT):
                 account = gw.context(symbol).account
                 share = gw.slice_usd(account)
-                if self._config.trading.instrument == "options":
+                if options:
                     budget = min(share, gw.risk.sizing_equity(account) * self._config.risk.max_risk_per_trade_pct / 100)
-                    gw.submit_option_entry("strategy", symbol, stop_underlying=decision.stop_price,
-                                           budget_usd=budget, inputs=decision.inputs)
+                    gw.submit_option_entry("strategy", symbol, stop_underlying=decision.stop_price, budget_usd=budget,
+                                           inputs=decision.inputs, kind="put" if decision.action == BUY_PUT else "call")
                 else:
                     gw.submit_entry(
                         "strategy", symbol, notional=share * STRATEGY_NOTIONAL_FRACTION,
@@ -303,7 +316,7 @@ class Engine:
             spec = self._orb_spec if self.strategy in BREAKOUTS else self._spec
         if symbol is None:
             self.gateway.decided_today = True
-        elif decision.action == BUY:
+        elif decision.action in (BUY, BUY_PUT):
             self.gateway.symbol_buys[symbol] = self.gateway.symbol_buys.get(symbol, 0) + 1
             extra.update(symbol=symbol, entry_number=self.gateway.symbol_buys[symbol])
         else:
@@ -362,11 +375,13 @@ class Engine:
         positions = []
         for p in ctx.positions:
             stops = [o for o in ctx.open_orders if o.symbol == p.symbol and o.type == "stop"]
-            trade = gw.open_trades.get(p.symbol)
+            trade = next((t for t in gw.open_trades.values() if t.symbol == p.symbol), None)
             positions.append({
                 "symbol": p.symbol, "qty": p.qty, "entry": p.avg_entry_price, "price": p.current_price,
                 "unrealized_pl": p.unrealized_pl, "stop": stops[0].stop_price if stops else None,
                 "source": trade.source if trade else "unknown",
+                "stop_note": (f"{trade.underlying} {'≥' if is_put(trade.symbol) else '≤'} {trade.stop_underlying:.2f}"
+                              if trade and trade.stop_underlying else None),
             })
         sizing = risk.sizing_equity(ctx.account)
         share = gw.slice_usd(ctx.account) if breakout else sizing

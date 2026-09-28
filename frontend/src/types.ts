@@ -24,6 +24,7 @@ export interface Position {
   price: number;
   unrealized_pl: number;
   stop: number | null;
+  stop_note?: string | null; // options: the bot-managed stop on the stock
   source: string;
 }
 

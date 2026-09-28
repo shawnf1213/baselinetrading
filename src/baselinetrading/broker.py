@@ -151,8 +151,8 @@ class AlpacaBroker:
     def get_order(self, order_id: str) -> OrderSnapshot:
         return _order(self._client.get_order_by_id(order_id))
 
-    def option_contracts(self, underlying: str, expires_from: dt.date, expires_to: dt.date) -> list:
-        """Tradable call contracts on `underlying` expiring in [expires_from, expires_to]. Read-only."""
+    def option_contracts(self, underlying: str, expires_from: dt.date, expires_to: dt.date, kind: str = "call") -> list:
+        """Tradable `kind` ("call" or "put") contracts on `underlying` expiring in [expires_from, expires_to]. Read-only."""
         from alpaca.trading.requests import GetOptionContractsRequest
 
         from baselinetrading.options import Contract
@@ -160,7 +160,7 @@ class AlpacaBroker:
         out, token = [], None
         while True:
             page = self._client.get_option_contracts(GetOptionContractsRequest(
-                underlying_symbols=[underlying], type="call", expiration_date_gte=expires_from,
+                underlying_symbols=[underlying], type=kind, expiration_date_gte=expires_from,
                 expiration_date_lte=expires_to, limit=1000, page_token=token,
             ))
             out += [Contract(c.symbol, c.expiration_date, float(c.strike_price))

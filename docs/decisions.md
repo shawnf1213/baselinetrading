@@ -201,4 +201,15 @@ the stock strategies' locked holdout, and the free plan has no historical
 option quotes for spreads. Live paper trading from 2026-09-28 is the test;
 every fill is journaled with the quote it was taken at.
 
+## 2026-09-28: Puts on crosses below the range
+
+You want puts used too. With `instrument = "options"`, a fresh cross below the
+opening range low (a close below it after a close at or above it) buys puts:
+earliest expiry 5-12 days out, highest strike at or below the price, same
+premium limits. The stop is the range high: the engine sells the puts when
+the stock's latest close is at or above it. Calls and puts share the 3
+entries per stock per day and the one-position-per-stock rule. With
+`instrument = "shares"` down-crosses are ignored (long-only). Live-tested
+only, like the calls.
+
 ## Tuned-parameter trial count: 0

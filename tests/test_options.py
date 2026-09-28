@@ -65,3 +65,34 @@ def test_the_engine_buys_calls_on_a_breakout_and_sells_them_on_the_stocks_stop(t
     eng.tick()
     assert gw.open_trades == {} and gw.closed_trades[-1].exit_reason.startswith("SPY traded at 499.80")
     assert broker.positions() == []
+
+
+def test_the_engine_buys_puts_on_a_cross_below_the_range_and_sells_them_if_the_stock_rises(tmp_path):
+    cfg = config(strategy="opening_range_breakout", instrument="options")
+    eng, gw, broker, clock, fetcher = engine(tmp_path, clock=Clock("11:01"), cfg=cfg)
+    serve(fetcher, day_bars(SESSION, until="11:01", **{"11_00": (500.0, 500.0, 499.5, 499.6)}))  # below 499.90
+    clock.set("11:01", 10)
+    eng.tick()
+    trade = gw.open_trades["SPY"]
+    assert "P" in trade.symbol[3:] and trade.stop_underlying == 500.1  # stop at the range high
+    assert gw.journal.recent(1, {"signal"})[0]["action"] == "BUY_PUT"
+    assert eng.status["positions"][0]["stop_note"] == "SPY ≥ 500.10"
+    gw.healths["SPY"].price = 500.20
+    eng.tick()
+    assert gw.open_trades == {} and "at or above the stop" in gw.closed_trades[-1].exit_reason
+
+
+def test_shares_mode_ignores_crosses_below_the_range(tmp_path):
+    eng, gw, broker, clock, fetcher = engine(tmp_path, clock=Clock("11:01"), cfg=config(strategy="opening_range_breakout"))
+    serve(fetcher, day_bars(SESSION, until="11:01", **{"11_00": (500.0, 500.0, 499.5, 499.6)}))
+    clock.set("11:01", 10)
+    eng.tick()
+    assert broker.mutations == [] and gw.journal.recent(5, {"signal"}) == []
+
+
+def test_closing_by_contract_symbol_closes_the_option(tmp_path):
+    gw, broker, _ = opts_gateway(tmp_path)
+    assert gw.submit_option_entry("strategy", "SPY", stop_underlying=497.5, budget_usd=2000).ok
+    contract = gw.open_trades["SPY"].symbol
+    assert gw.exit_all("manual", "from the UI", symbol=contract).ok
+    assert broker.positions() == [] and gw.open_trades == {}
