@@ -17,3 +17,5 @@ dist/
 data/cache/
 logs/
 state/
+frontend/node_modules/
+frontend/dist/

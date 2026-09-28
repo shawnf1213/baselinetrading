@@ -92,7 +92,13 @@ same number of trades. Each random trade enters at a uniformly random minute
 of the strategy's allowed entry window and has the same size and the same
 holding time as the real trade it replaces. The cost model is identical.
 The p-value is the share of random runs whose net P&L is at least the
-strategy's. The strategy passes only if p is below the significance level
+strategy's.
+
+For strategy C the entry time is fixed at 15:30, so a random minute would
+just reproduce the real trade. Its B3 randomises the **days** instead: the
+same 15:30-15:55 trade, with the same stop, size and costs, taken on as many
+randomly chosen full sessions as the strategy traded. That isolates exactly
+what the morning signal adds over always holding the last half hour. The strategy passes only if p is below the significance level
 from section 5, which is adjusted for the number of variants tried.
 
 ## 3. Statistics: every number comes with its uncertainty

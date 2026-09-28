@@ -178,6 +178,21 @@ class MarketData:
         check_fresh(bars, now=now, max_staleness=dt.timedelta(seconds=self._data.max_staleness_seconds))
         return bars
 
+    def daily_closes(self, symbol: str, start: dt.date, end: dt.date) -> dict[dt.date, float]:
+        """Official daily closes on the research feed, keyed by session date. Malformed bars raise."""
+        self._guard_holdout(start, end)
+        feed = self._data.research_feed
+        bars = self._fetch(
+            f"{symbol} daily bars {start} to {end}", lambda: self._fetcher.daily_bars(symbol, start, end, feed)
+        )
+        closes: dict[dt.date, float] = {}
+        for bar in bars:
+            problems = bar_problems(bar)
+            if problems:
+                raise DataUnavailable(f"bad {symbol} daily bar at {bar.start}: {'; '.join(problems)}")
+            closes[bar.start.astimezone(ET).date()] = bar.close
+        return closes
+
     def display_bars(self, symbol: str, session: Session, end: dt.datetime) -> list[Bar]:
         """Bars for the chart only, never for decisions: gaps allowed, malformed bars dropped, not cached."""
         self._guard_holdout(session.date, session.date)

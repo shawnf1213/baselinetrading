@@ -14,42 +14,83 @@ the no-change forecast, buy-and-hold, and random entries (see
 | 1 | Project structure, fail-closed config, credentials | done |
 | 2 | Market data with staleness and gap detection | done |
 | 3 | Strategy C, last-half-hour momentum (separate from execution) | done; rules in [docs/decisions.md](docs/decisions.md) |
-| 4 | Backtester: costs, walk-forward, baselines, trial ledger | next |
-| 5 | Risk manager with order veto | |
-| 6 | Execution, Alpaca paper only | |
-| 7 | Logging of signals, orders and fills, with their inputs | |
-| 8 | Daily P&L summary against the breakeven bar | |
+| 4 | Backtester: costs, walk-forward, baselines, trial ledger, holdout lock | done (needs Alpaca data to run) |
+| 5 | Risk manager with order veto (manual and strategy) | done |
+| 6 | Execution: order gateway, engine, FastAPI backend, React UI | done |
+| 7 | Journal of signals, orders and fills, with inputs and source | done |
+| 8 | Daily P&L per source against the breakeven bar (in the UI) | done |
 
 ## Setup
 
-Python 3.11 or newer.
+Python 3.11+ and Node 20+.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest                     # tests
-python -m baselinetrading.edge       # the cost / breakeven / sample-size arithmetic
-python -m baselinetrading.data_check # needs paper keys: fetches one recent session, both feeds
-python -m baselinetrading.signal_check --date 2021-06-01   # strategy decision + inputs, no orders
+cp .env.example .env               # fill in PAPER keys and a UI token; .env is git-ignored
+set -a; source .env; set +a
+python -m pytest                   # all tests, no network needed
 ```
 
-Credentials come **only** from environment variables, and only paper keys
-are accepted (Alpaca paper key IDs start with `PK`):
+Command-line tools:
 
 ```bash
-cp .env.example .env                 # .env is git-ignored; fill in your paper keys
-set -a; source .env; set +a
+python -m baselinetrading.edge                           # cost / breakeven / sample-size arithmetic
+python -m baselinetrading.data_check                     # fetch one recent session on both feeds
+python -m baselinetrading.signal_check --date 2021-06-01 # a strategy decision and its inputs, no orders
+python -m baselinetrading.backtest --split in_sample     # the backtest report
 ```
 
-Only `data_check` (and later the bot) needs the keys; the tests don't.
+## The trading client (web UI)
 
-AI (a language model) is never in the order path: it can't be backtested
-honestly (it has read the price history, including the holdout), its output
-isn't reproducible, and prompt changes are hidden tuning. It can explain logs
-and write summaries. The Alpaca MCP server (lets an AI assistant trade from chat) is fine for
-read-only inspection of the paper account. It's not part of the bot: orders
-sent through it would bypass the risk manager, the fail-closed checks and the
-logging.
+Local, with live reload while developing:
+
+```bash
+uvicorn baselinetrading.server:app --host 127.0.0.1 --port 8000   # backend + strategy engine
+npm --prefix frontend install && npm --prefix frontend run dev     # UI on http://127.0.0.1:5173
+```
+
+Local, as it will be deployed (one process serves UI and API):
+
+```bash
+npm --prefix frontend run build
+uvicorn baselinetrading.server:app --host 127.0.0.1 --port 8000   # open http://127.0.0.1:8000
+```
+
+Docker:
+
+```bash
+docker build -t baselinetrading .
+docker run --env-file .env -p 127.0.0.1:8000:8000 \
+  -v "$PWD/logs:/app/logs" -v "$PWD/state:/app/state" baselinetrading
+```
+
+Before exposing it beyond localhost, put it behind HTTPS: the token travels in
+every request. Use an always-on host; one that sleeps when idle would miss the
+15:30 entry and the 15:55 exit. The strategy engine runs inside the backend
+process, so the UI shows "engine is not running" if it stops.
+
+The web UI:
+- Chart (TradingView Lightweight Charts, 1-minute SPY) with entry and stop
+  lines. It's for display only; decisions use validated data.
+- Manual order ticket: a market buy with a mandatory stop.
+- Open position: close it.
+- Kill switch: type FLATTEN to confirm.
+- Strategy armed/disarmed, with every reason.
+- Today's P&L per source (manual vs strategy) against the breakeven cost.
+- The last strategy decisions with their inputs, and the full journal.
+
+Every disabled control lists why, using the risk manager's own wording.
+
+**One path to the broker.** Browser -> FastAPI -> OrderGateway ->
+RiskManager.execute -> Alpaca. The browser never sees the Alpaca keys and
+never talks to Alpaca. Every method that changes anything at the broker
+raises `RiskBypass` unless `RiskManager.execute` is on the call stack. Tests
+call every POST route and fail if any broker change happens outside it.
+
+**Paper only.** The trading client is created with `paper=True`, and startup
+refuses an account whose number doesn't start with `PA`. There's no live
+setting to flip.
 
 ## Safety: rules in code, not settings
 
@@ -104,5 +145,13 @@ src/baselinetrading/
   data_check.py             end-to-end data check with your keys
   strategy.py               strategy C: frozen spec, pure 15:30 decision, stop price
   signal_check.py           prints one session's decision and its inputs
+  broker.py                 broker snapshots; AlpacaBroker (paper); the risk-manager call-stack guard
+  risk.py                   RiskManager: every rule, one veto, the only door to the broker
+  gateway.py                OrderGateway: entry + stop, exits, kill switch, reconciliation
+  journal.py                JSONL journal (source-tagged), replay on restart, P&L per source
+  engine.py                 background strategy engine and the UI status snapshot
+  server.py                 FastAPI: auth, one order route, kill switch, WebSocket, serves the UI
+  backtest.py               walk-forward backtest with costs, baselines and a trial ledger
+frontend/                   React + Vite + TypeScript UI (dark theme)
 tests/                      one test file per module
 ```
