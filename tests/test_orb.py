@@ -1,4 +1,4 @@
-﻿import datetime as dt
+import datetime as dt
 
 from baselinetrading.backtest import run_days, report, simulate_long
 from baselinetrading.bars import ET, MINUTE, Bar
@@ -89,8 +89,9 @@ def serve(fetcher, bars):
     fetcher.minute_bars = lambda symbol, start, end, feed: [b for b in bars if start <= b.start < end]
 
 
-def orb_engine(tmp_path, hhmm, **kw):
-    return engine(tmp_path, clock=Clock(hhmm), cfg=config(strategy="opening_range_breakout"), **kw)
+def orb_engine(tmp_path, hhmm, max_entries_per_day=1, **kw):
+    cfg = config(strategy="opening_range_breakout", max_entries_per_day=max_entries_per_day)
+    return engine(tmp_path, clock=Clock(hhmm), cfg=cfg, **kw)
 
 
 def test_engine_buys_on_the_minute_the_breakout_bar_closes(tmp_path):
@@ -113,13 +114,34 @@ def test_engine_keeps_watching_without_a_breakout(tmp_path):
     assert "watching" in eng.status["watching"]
 
 
-def test_engine_does_not_chase_a_breakout_it_saw_late(tmp_path):
+def test_a_late_engine_waits_for_the_next_cross_instead_of_chasing(tmp_path):
     eng, gw, broker, clock, fetcher = orb_engine(tmp_path, "11:30")
-    serve(fetcher, day_bars(SESSION, until="11:30", **BREAKOUT))
+    later_cross = {"11_40": (500.0, 500.5, 500.0, 500.4)}
+    serve(fetcher, day_bars(SESSION, until="11:41", **BREAKOUT, **later_cross))
     clock.set("11:30", 10)
     eng.tick()
-    assert "missed the breakout" in gw.journal.recent(1, {"signal"})[0]["reason"]
-    assert broker.mutations == []
+    assert gw.journal.recent(5, {"signal"}) == [] and broker.mutations == []  # the 11:00 cross is history
+    clock.set("11:41", 10)
+    eng.tick()
+    assert gw.journal.recent(1, {"signal"})[0]["action"] == "BUY"
+    assert [m[0] for m in broker.mutations] == ["submit_market", "submit_stop_sell"]
+
+
+def test_a_stop_out_re_arms_the_symbol_for_the_next_cross(tmp_path):
+    eng, gw, broker, clock, fetcher = orb_engine(tmp_path, "11:01", max_entries_per_day=5)
+    second = {"12_00": (500.0, 500.5, 500.0, 500.4)}
+    serve(fetcher, day_bars(SESSION, until="12:01", **BREAKOUT, **second))
+    clock.set("11:01", 10)
+    eng.tick()
+    broker.trigger_stop(499.8)  # stopped out
+    clock.set("11:30", 10)
+    eng.tick()
+    assert gw.open_trades == {} and len(gw.closed_trades) == 1
+    clock.set("12:01", 10)
+    eng.tick()
+    buys = [s for s in gw.journal.recent(10, {"signal"}) if s["action"] == "BUY"]
+    assert [s["entry_number"] for s in buys] == [2, 1]
+    assert len([m for m in broker.mutations if m[0] == "submit_market"]) == 2
 
 
 def test_engine_records_no_trade_at_the_cutoff(tmp_path):
@@ -245,3 +267,25 @@ def test_per_share_costs_use_the_price_actually_traded():
     adjusted = simulate_long(DAY, bars, at(DAY, "11:01"), 499.5, at(DAY, "15:55"), config())
     pre_split = simulate_long(DAY, bars, at(DAY, "11:01"), 499.5, at(DAY, "15:55"), config(), cost_scale=10.0)
     assert pre_split.cost_bps < adjusted.cost_bps  # 10x the price: a tenth of the shares, a tenth of the spread
+
+
+def test_backtest_re_enters_on_the_next_cross_after_a_stop_out(tmp_path):
+    from baselinetrading.backtest import _one_day_orb
+    from baselinetrading.market_data import MarketData
+
+    bars = day_bars(DAY, **BREAKOUT, **{"09_30": (500.0, 500.1, 499.5, 500.0),  # range low (the stop) 499.50
+                                        "12_00": (500.0, 500.0, 499.0, 499.5),  # stopped out
+                                        "13_00": (500.0, 500.5, 500.0, 500.4)})  # crosses again
+
+    class OneDay:
+        def minute_bars(self, symbol, start, end, feed):
+            return [b for b in bars if start <= b.start < end]
+
+        def sessions(self, start, end):
+            return [DAY] if start <= DAY.date <= end else []
+
+    data = MarketData(OneDay(), config(), cache_dir=None, now=lambda: dt.datetime(2026, 9, 28, 12, tzinfo=ET),
+                      sleep=lambda s: None)
+    day = _one_day_orb(data, config(), "SPY", DAY, "sip")
+    assert [t.exit_reason for t in day.trades] == ["stop", "time"]
+    assert day.trades[1].entry == 500.0  # the 13:01 open

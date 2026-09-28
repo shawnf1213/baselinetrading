@@ -83,7 +83,9 @@ class OrderGateway:
         self.closed_trades: list[Trade] = []
         self.entries_today = 0
         self.decided_today = False  # strategy C's single decision
-        self.decided_symbols: set[str] = set()  # the breakout's decision, per symbol
+        self.decided_symbols: set[str] = set()  # symbols the breakout is done with for today
+        self.symbol_buys: dict[str, int] = {}  # the breakout's entries today, per symbol
+        self.decided_specs: dict[str, str | None] = {}  # which spec made each replayed final decision
         self._day = self._today()
         self.kill_switch = self._kill_file().exists() if self._kill_file() else False
         self._replay_today()
@@ -142,7 +144,8 @@ class OrderGateway:
             price = ctx.reference_price
             if qty is None and notional is not None and price:
                 qty = floor_qty(notional / price)
-            planned_stop = stop_price
+            # Brokers reject sub-penny stops (IEX bars can carry prices like 244.755): round down to the cent.
+            planned_stop = math.floor(stop_price * 100) / 100 if isinstance(stop_price, (int, float)) and math.isfinite(stop_price) else stop_price
             if stop_pct is not None and price:
                 planned_stop = math.floor(price * (1 - stop_pct / 100) * 100) / 100
             order = EntryOrder(source, symbol, qty if qty is not None else float("nan"), planned_stop)
@@ -316,8 +319,11 @@ class OrderGateway:
             if kind == "order_submitted" and event.get("side") == "buy":
                 self.entries_today += 1
             elif kind == "signal":
-                if event.get("symbol"):
+                if event.get("symbol") and event.get("action") == "BUY":
+                    self.symbol_buys[event["symbol"]] = self.symbol_buys.get(event["symbol"], 0) + 1
+                elif event.get("symbol"):
                     self.decided_symbols.add(event["symbol"])
+                    self.decided_specs[event["symbol"]] = event.get("spec")
                 else:
                     self.decided_today = True
             elif kind in ("trade_opened", "trade_closed"):
@@ -334,7 +340,7 @@ class OrderGateway:
         today = self._today()
         if today != self._day:
             self._day, self.entries_today, self.decided_today, self.closed_trades = today, 0, False, []
-            self.decided_symbols = set()
+            self.decided_symbols, self.symbol_buys = set(), {}
 
     def _today(self) -> dt.date:
         return self._clock().astimezone(ET).date()

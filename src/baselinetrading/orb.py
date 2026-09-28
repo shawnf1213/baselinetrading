@@ -37,6 +37,11 @@ class OrbSpec:
     last_entry: dt.time = dt.time(15, 45)  # the entry (next bar's open) must be before this
     exit_time: dt.time = dt.time(15, 55)
     gaps_after_range: str = "allowed"  # v2 (2026-09-28): missing minutes after the range can't trigger, don't cancel
+    # v3 (2026-09-28): enter on every fresh cross above the range high (a close above it after a close
+    # at or below it), while flat in the symbol, up to max_entries a day. A late start or a stop-out
+    # just waits for the next cross.
+    entry: str = "cross"
+    max_entries: int = 3
 
     def fingerprint(self) -> str:
         text = json.dumps({k: str(v) for k, v in asdict(self).items()}, sort_keys=True)
@@ -66,6 +71,8 @@ class AdaptiveOrbSpec:
     last_entry: dt.time = dt.time(15, 45)
     exit_time: dt.time = dt.time(15, 55)
     gaps_after_range: str = "allowed"
+    entry: str = "cross"
+    max_entries: int = 3
 
     def fingerprint(self) -> str:
         text = json.dumps({k: str(v) for k, v in asdict(self).items()}, sort_keys=True)
@@ -85,7 +92,8 @@ class AdaptiveOrbSpec:
         start = dt.datetime.combine(dt.date(2000, 1, 3), self.range_start)
         end = (start + dt.timedelta(minutes=self.range_minutes(outcomes))).time()
         return OrbSpec(name=self.name, range_start=self.range_start, range_end=end,
-                       last_entry=self.last_entry, exit_time=self.exit_time)
+                       last_entry=self.last_entry, exit_time=self.exit_time, entry=self.entry,
+                       max_entries=self.max_entries)
 
 
 ADAPTIVE_ORB_SPEC = AdaptiveOrbSpec()
@@ -159,3 +167,49 @@ def decide_orb(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC
     if until >= last_breakout_end:
         return result(NO_TRADE, f"no close above the range high {high:.2f} before {_hm(last_breakout_end)}", inputs)
     return result(WAIT, f"watching for a close above {high:.2f} (stop would be {low:.2f})", inputs)
+
+
+def find_cross(session: Session, bars: tuple[Bar, ...], spec: OrbSpec = ORB_SPEC, *,
+               after: dt.datetime, until: dt.datetime) -> OrbDecision:
+    """The first fresh cross above the opening range high among bars starting at or after `after`.
+
+    A fresh cross is a bar that closes above the range high while the bar
+    before it (the previous bar that exists) closed at or below it. The first
+    close above the high after the range is always one, so the first entry of
+    the day is the same as v2's; later crosses allow re-entries after a
+    stop-out, and let an engine that started late wait for the next one
+    instead of skipping the day. Bars ending after `until` or after the last
+    entry time are never read.
+    """
+
+    def result(action: str, reason: str, inputs: OrbInputs | None = None, **kw) -> OrbDecision:
+        return OrbDecision(session.date, action, reason, inputs, **kw)
+
+    if not session.is_full_day:
+        return result(NO_TRADE, "half day: the strategy doesn't trade")
+    start = spec.at(session, spec.range_start)
+    range_end = spec.at(session, spec.range_end)
+    last_breakout_end = spec.at(session, spec.last_entry) - MINUTE
+    if until < range_end:
+        return result(WAIT, "the opening range isn't complete yet")
+    opening = tuple(b for b in bars if b.start < range_end)
+    problem = _window_problem(opening, start, range_end)
+    if problem:
+        return result(NO_TRADE, f"opening range: {problem}")
+    high, low = max(b.high for b in opening), min(b.low for b in opening)
+    base = dict(range_high=high, range_low=low, range_pct=(high - low) / low * 100,
+                range_volume=sum(b.volume for b in opening))
+    ordered = sorted(bars, key=lambda b: b.start)
+    for i, bar in enumerate(ordered):
+        if bar.start < max(after, range_end):
+            continue
+        if bar.end > min(last_breakout_end, until):
+            break
+        if bar.close > high and ordered[i - 1].close <= high:
+            inputs = OrbInputs(**base, breakout_time=_hm(bar.start), breakout_close=bar.close)
+            return result(BUY, f"{_hm(bar.start)} bar closed at {bar.close:.2f}, crossing the range high {high:.2f}",
+                          inputs, stop_price=low, entry_at=bar.end)
+    inputs = OrbInputs(**base, breakout_time=None, breakout_close=None)
+    if until >= last_breakout_end:
+        return result(NO_TRADE, f"no fresh cross above the range high {high:.2f} before {_hm(last_breakout_end)}", inputs)
+    return result(WAIT, f"watching for a cross above {high:.2f} (stop would be {low:.2f})", inputs)

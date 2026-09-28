@@ -1,0 +1,9 @@
+SUMMARY: adaptive-opening-range-breakout on in_sample, $12,500 per symbol
+SPY    trades  1199  win  38.8%  net $  -4,492.18  EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 fail)
+AAPL   trades   837  win  45.9%  net $    +659.39  EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 pass)
+NVDA   trades   819  win  48.6%  net $  +8,438.27  EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 fail)
+AMD    trades   750  win  46.5%  net $ +10,670.23  EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 pass)
+MSFT   trades   873  win  44.7%  net $  -3,324.48  EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 fail)
+TSLA   trades   749  win  51.9%  net $ +24,125.89  EDGE: NONE, not all three baselines beaten (B1 pass, B2 fail, B3 pass)
+META   trades   876  win  44.5%  net $  -1,528.45  EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 fail)
+AMZN   trades   801  win  49.1%  net $  +9,439.31  EDGE: NONE, not all three baselines beaten (B1 pass, B2 fail, B3 pass)

@@ -1,0 +1,33 @@
+=== AMD ===
+BACKTEST: adaptive-opening-range-breakout (4fb0f5c98c9ebd4a) on in_sample, feed sip, $12,500 account
+BREAKEVEN WIN RATE: 42.9%  (avg net win 181.35 bp, avg net loss 136.11 bp; costs 12.21 bp per round trip)
+Trials so far (distinct specs): 4; significance level 0.0127 (Šidák), confidence 98.73%
+
+Days: 1259   trades: 750   no-trade: 491   skipped: 18
+   skipped, data unavailable: 2
+   skipped, half day: 11
+   skipped, opening range: 5
+Stop exits: 174
+
+Strategy, net of costs
+   win rate 46.5% (349/750), 99% CI 42.0%-51.1%; breakeven 42.9% -> INCONCLUSIVE
+   n = 750 is too small to conclude: a 5-point edge needs ~932 trades at this significance level
+   mean net per trade +11.61 bp, 95% bootstrap CI -3.74 to +27.02 bp
+   mean gross per trade +23.83 bp
+   total net P&L $+10,670.23 (+85.36% of the account, no compounding)
+
+B1. No-change forecast: do signal days move up after the entry more than zero?
+   + 1 min: mean +1.45 bp (95% CI -0.26 to +3.15)
+   + 5 min: mean +7.91 bp (95% CI +4.56 to +11.11)
+   +15 min: mean +8.09 bp (95% CI +2.28 to +13.63)
+   to exit: gross +23.83 bp (CI +8.43 to +39.88); net CI includes zero -> FAIL
+
+B2. Buy-and-hold over the same period
+   no close before 2016-01-04: buy-and-hold starts at that day's open, 2.77
+   (a) close-to-close buy-and-hold, net: +3210.44%   strategy: +87.10% -> FAIL
+   (b) open-to-15:55 every day, gross, diagnostic only: +120.73%
+
+B3. Random entries: the same trade on randomly chosen days (same count, size, hold, costs)
+   always-long mean -0.49 bp over 1241 days; p = 0.0020 vs level 0.0127 -> PASS
+
+EDGE: NONE, not all three baselines beaten (B1 fail, B2 fail, B3 pass)

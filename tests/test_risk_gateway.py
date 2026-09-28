@@ -288,3 +288,9 @@ def test_a_restart_keeps_the_days_entry_count_and_trades(tmp_path):
     restarted, _, _ = gateway(tmp_path, broker=broker, clock=clock)
     assert restarted.entries_today == 1
     assert len(restarted.closed_trades) == 1 and restarted.closed_trades[0].source == "manual"
+
+
+def test_sub_penny_stops_are_rounded_down_to_the_cent(tmp_path):
+    gw, broker, _ = gateway(tmp_path)
+    assert gw.submit_entry("strategy", "SPY", qty=10, stop_price=494.755).ok
+    assert broker.mutations[1] == ("submit_stop_sell", "SPY", 10, 494.75)

@@ -5,7 +5,7 @@ Every couple of seconds it:
 2. reconciles positions with the broker (a stop hit, or a position without a stop);
 3. flattens everything when the daily loss limit is hit or at the flatten time;
 4. runs the configured strategy: C's one decision at 15:30:05-15:30:55 ET, or
-   the opening range breakout, checked once a minute from 09:35 to 15:44;
+   the opening range breakout on every symbol, checked once a minute until 15:44;
 5. rebuilds the status snapshot the UI shows.
 
 It never places orders itself: entries and exits go through the gateway, and
@@ -26,7 +26,7 @@ from baselinetrading.costs import round_trip_cost
 from baselinetrading.gateway import OrderGateway
 from baselinetrading.journal import summarize
 from baselinetrading.market_data import MarketData
-from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, WAIT, OrbSpec, decide_orb
+from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, WAIT, OrbSpec, find_cross
 from baselinetrading.strategy import BUY, NO_TRADE, SPEC, Decision, StrategySpec, decide_from_data
 
 TICK_SECONDS = 5.0  # ~10 broker reads per tick; Alpaca allows 200 requests a minute
@@ -66,6 +66,11 @@ class Engine:
         state_dir = gateway._state_dir
         self._outcomes_path = state_dir / "adaptive_orb_outcomes.json" if state_dir else None
         self._outcomes: list[dict] = self._load_outcomes()
+        if self.strategy in BREAKOUTS:  # a "done for today" made under other rules doesn't bind these ones
+            current = (ADAPTIVE_ORB_SPEC if self.strategy == "adaptive_opening_range_breakout" else orb_spec).fingerprint()
+            for symbol, spec in list(gateway.decided_specs.items()):
+                if spec != current:
+                    gateway.decided_symbols.discard(symbol)
         self._sessions: dict[dt.date, Session | None] = {}
         self._calendar_error: str | None = None
         self._last_health: dt.datetime | None = None
@@ -186,14 +191,16 @@ class Engine:
             )
 
     def _maybe_decide_orb(self, session: Session | None, now: dt.datetime) -> None:
-        """Once a minute from the end of the opening range, for every symbol: buy on the bar that just
-        closed above that symbol's range, with that symbol's share of the account."""
+        """Once a minute from the end of the opening range, for every symbol that's flat: buy when the bar
+        that just closed crossed above that symbol's range high, with that symbol's share of the account.
+        Up to the spec's max entries a day per symbol; a stop-out re-arms it for the next cross."""
         if session is None:
             self.watching = {}
             return
+        gw = self.gateway
         minute = now.replace(second=0, microsecond=0)
         for symbol in self.symbols:
-            if symbol in self.gateway.decided_symbols:
+            if symbol in gw.decided_symbols:
                 self.watching.pop(symbol, None)
                 continue
             spec = self.active_orb_spec(symbol)
@@ -202,9 +209,19 @@ class Engine:
                 continue
             if now < spec.at(session, spec.range_end) + DECISION_DELAY:
                 continue
+            buys = gw.symbol_buys.get(symbol, 0)
             if now >= spec.at(session, spec.last_entry):
-                reason = self.watching.get(symbol) or "no breakout was seen (engine wasn't running or data was unavailable)"
-                self._record(Decision(session.date, NO_TRADE, f"no entry before {spec.last_entry:%H:%M}: {reason}"), symbol)
+                if buys:
+                    gw.decided_symbols.add(symbol)
+                else:
+                    reason = self.watching.get(symbol) or "no cross was seen (engine wasn't running or data was unavailable)"
+                    self._record(Decision(session.date, NO_TRADE, f"no entry before {spec.last_entry:%H:%M}: {reason}"), symbol)
+                continue
+            if buys >= spec.max_entries:
+                gw.decided_symbols.add(symbol)
+                continue
+            if symbol in gw.open_trades:
+                self.watching[symbol] = f"holding (entry {buys} of {spec.max_entries} today)"
                 continue
             if self._orb_checked.get(symbol) == minute or now - minute < DECISION_DELAY:
                 continue
@@ -214,18 +231,15 @@ class Engine:
             except DataUnavailable as exc:  # retried next minute; the status shows why
                 self.watching[symbol] = f"data unavailable: {exc}"
                 continue
-            decision = decide_orb(session, bars, spec, until=minute)
+            decision = find_cross(session, bars, spec, after=minute - MINUTE, until=minute)
             if decision.action == WAIT:
-                self.watching[symbol] = decision.reason
+                self.watching[symbol] = decision.reason + (f"; entries today {buys} of {spec.max_entries}" if buys else "")
                 continue
-            if decision.action == BUY and decision.entry_at != minute:
-                decision = Decision(session.date, NO_TRADE,
-                                    f"missed the breakout ({decision.reason}); the engine saw it late", decision.inputs)
             self.watching.pop(symbol, None)
             self._record(decision, symbol)
             if decision.action == BUY:
-                share = self.gateway.slice_usd(self.gateway.context(symbol).account)
-                self.gateway.submit_entry(
+                share = gw.slice_usd(gw.context(symbol).account)
+                gw.submit_entry(
                     "strategy", symbol, notional=share * STRATEGY_NOTIONAL_FRACTION,
                     stop_price=decision.stop_price, inputs=decision.inputs,
                 )
@@ -272,6 +286,9 @@ class Engine:
             spec = self._orb_spec if self.strategy in BREAKOUTS else self._spec
         if symbol is None:
             self.gateway.decided_today = True
+        elif decision.action == BUY:
+            self.gateway.symbol_buys[symbol] = self.gateway.symbol_buys.get(symbol, 0) + 1
+            extra.update(symbol=symbol, entry_number=self.gateway.symbol_buys[symbol])
         else:
             self.gateway.decided_symbols.add(symbol)
             extra["symbol"] = symbol

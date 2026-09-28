@@ -162,4 +162,22 @@ new fingerprints: A v2 `6508347fbb9962bf`, A2 v2 `0fdc4b1982b381f4`.
 **Backtest:** each symbol with its $12,500 share, reported per symbol plus a
 summary (`results/*-summary.txt`).
 
+## 2026-09-28: Breakout v3, re-entries on fresh crosses
+
+You want the bot to day-trade like a person, not take one shot per stock and
+give up. v2 took the first close above the range high and was then done for
+the day; a restart after that close, or a stop-out, meant no more trades.
+
+**v3 entry rule:** buy whenever a bar closes above the range high after the
+previous bar closed at or below it (a fresh cross), while flat in that stock,
+up to 3 entries per stock per day. Stop at the range low, exit at 15:55 as
+before. The first entry of a day is the same as v2's. A stop-out re-arms the
+stock for the next cross; an engine that starts late waits for the next cross
+instead of skipping the day. Decisions recorded today under older rules no
+longer block a stock after a restart.
+
+Fingerprints: A v3 `1903aa2a5f90d8bc`, A2 v3 `4fb0f5c98c9ebd4a` (live).
+Switched live at 11:25 ET on 2026-09-28, before its backtest finished, at
+your request ("fix it"): paper money only.
+
 ## Tuned-parameter trial count: 0

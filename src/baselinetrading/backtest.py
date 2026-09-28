@@ -38,15 +38,15 @@ import math
 import random
 import statistics
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from baselinetrading.bars import ET, Bar, DataUnavailable, Session
+from baselinetrading.bars import ET, MINUTE, Bar, DataUnavailable, Session
 from baselinetrading.config import DEFAULT_CONFIG_PATH, Config, ConfigError, load_config
 from baselinetrading.costs import BPS, breakeven_win_rate, round_trip_cost
 from baselinetrading.market_data import MarketData
 from baselinetrading.stats import compare_to_breakeven, trades_needed
-from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, decide_orb
+from baselinetrading.orb import ADAPTIVE_ORB_SPEC, ORB_SPEC, decide_orb, find_cross
 from baselinetrading.strategy import BUY, SPEC, StrategySpec, decide_entry
 
 RESULTS_DIR = DEFAULT_CONFIG_PATH.parents[1] / "results"
@@ -66,6 +66,7 @@ class SimTrade:
     notional: float
     gross_bps: float
     cost_bps: float
+    exit_bar: dt.datetime | None = None  # start of the bar the exit happened in
 
     @property
     def net_bps(self) -> float:
@@ -111,16 +112,18 @@ def simulate_long(session: Session, bars: tuple[Bar, ...], entry_at: dt.datetime
     """
     entry = _bar_at_or_after(bars, entry_at).open
     notional = config.account.equity_cap_usd * NOTIONAL_FRACTION
-    exit_price, reason = _bar_at_or_after(bars, exit_at).open, "time"
+    exit_bar = _bar_at_or_after(bars, exit_at)
+    exit_price, reason, exit_start = exit_bar.open, "time", exit_bar.start
     if stop >= entry:
-        exit_price, reason = entry, "unprotected"
+        exit_price, reason, exit_start = entry, "unprotected", entry_at
     else:
         for bar in sorted(bars, key=lambda b: b.start):
             if entry_at <= bar.start < exit_at and bar.low <= stop:
-                exit_price, reason = min(stop, bar.open), "stop"
+                exit_price, reason, exit_start = min(stop, bar.open), "stop", bar.start
                 break
     cost = round_trip_cost(config.costs, notional_usd=notional, price=entry * cost_scale, exit_by_stop=reason == "stop")
-    return SimTrade(session.date, entry, exit_price, reason, notional, (exit_price / entry - 1) * BPS, cost.total_bps)
+    return SimTrade(session.date, entry, exit_price, reason, notional, (exit_price / entry - 1) * BPS, cost.total_bps,
+                    exit_start)
 
 
 def _bar_at_or_after(bars: tuple[Bar, ...], moment: dt.datetime) -> Bar:
@@ -142,6 +145,11 @@ class DayResult:
     forward_bps: dict[int, float] | None  # forward returns from the entry for baseline B1
     open_price: float | None
     close_price: float | None
+    more_trades: list[SimTrade] = field(default_factory=list)  # re-entries after stop-outs (breakout v3)
+
+    @property
+    def trades(self) -> list[SimTrade]:
+        return ([self.trade] if self.trade else []) + self.more_trades
 
 
 def run_days(data: MarketData, config: Config, symbol: str, start: dt.date, end: dt.date,
@@ -160,8 +168,7 @@ def run_days(data: MarketData, config: Config, symbol: str, start: dt.date, end:
         if strategy == "adaptive_opening_range_breakout":
             day = _one_day_orb(data, config, symbol, session, feed, ADAPTIVE_ORB_SPEC.day_spec(outcomes),
                                scales.get(session.date, 1.0))
-            if day.trade:
-                outcomes.append(day.trade.net_bps > 0)
+            outcomes += [t.net_bps > 0 for t in day.trades]
             results.append(day)
         elif strategy == "opening_range_breakout":
             results.append(_one_day_orb(data, config, symbol, session, feed, cost_scale=scales.get(session.date, 1.0)))
@@ -184,7 +191,10 @@ def _one_day_orb(data, config, symbol, session, feed, spec=ORB_SPEC, cost_scale=
     exit_at = spec.at(session, spec.exit_time)
     if not bars or bars[-1].start < exit_at:
         return skip(f"data unavailable: no bar at or after {exit_at:%H:%M}")
-    decision = decide_orb(session, bars, spec, until=session.close)
+    if spec.entry == "cross":
+        decision = find_cross(session, bars, spec, after=spec.at(session, spec.range_end), until=session.close)
+    else:
+        decision = decide_orb(session, bars, spec, until=session.close)
     if decision.action not in (BUY, "NO_TRADE"):
         return skip(f"undecided: {decision.reason}")
     if decision.inputs is None:
@@ -198,8 +208,17 @@ def _one_day_orb(data, config, symbol, session, feed, spec=ORB_SPEC, cost_scale=
         last = _index_at_or_after(bars, exit_at)
         forward = {m: (bars[min(index + m - 1, last)].close / trade.entry - 1) * BPS for m in FORWARD_MINUTES}
     close_price = _bar_at_or_after(bars, exit_at).close
+    more = []
+    if trade and spec.entry == "cross":  # re-enter on the next cross after each stop-out, up to max_entries
+        last = trade
+        while last.exit_reason == "stop" and 1 + len(more) < spec.max_entries:
+            again = find_cross(session, bars, spec, after=last.exit_bar + MINUTE, until=session.close)
+            if again.action != BUY:
+                break
+            last = simulate_long(session, bars, again.entry_at, again.stop_price, exit_at, config, cost_scale)
+            more.append(last)
     return DayResult(session.date, decision.action, decision.reason, None, trade, always, forward,
-                     bars[0].open, close_price)
+                     bars[0].open, close_price, more)
 
 
 def _one_day(data, config, symbol, session, previous_close, spec, feed) -> DayResult:
@@ -246,7 +265,7 @@ def bootstrap_mean_ci(values: list[float], rng: random.Random, runs: int = BOOTS
 def report(days: list[DayResult], closes: dict[dt.date, float], config: Config, *, split: str, trials: int,
            spec=SPEC, feed: str = "sip") -> str:
     rng = random.Random(SEED)
-    trades = [d.trade for d in days if d.trade]
+    trades = [t for d in days for t in d.trades]
     eligible = [d for d in days if d.always_long]
     skipped = [d for d in days if d.action == "SKIP"]
     alpha = 1 - (1 - 0.05) ** (1 / max(trials, 1))
@@ -346,7 +365,9 @@ def report(days: list[DayResult], closes: dict[dt.date, float], config: Config, 
     add("B3. Random entries: the same trade on randomly chosen days (same count, size, hold, costs)")
     pool = [d.always_long.net_bps for d in eligible]
     target = sum(t.net_bps for t in trades)
-    beats = sum(1 for _ in range(RANDOM_RUNS) if sum(rng.sample(pool, n)) >= target) if len(pool) >= n else RANDOM_RUNS
+    # More trades than days (re-entries): draw days with replacement.
+    draw = (lambda: rng.sample(pool, n)) if len(pool) >= n else (lambda: rng.choices(pool, k=n))
+    beats = sum(1 for _ in range(RANDOM_RUNS) if sum(draw()) >= target) if pool else RANDOM_RUNS
     p_value = (beats + 1) / (RANDOM_RUNS + 1)
     b3 = p_value < alpha
     add(f"   always-long mean {statistics.fmean(pool):+.2f} bp over {len(pool)} days; p = {p_value:.4f} "
@@ -444,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         text = report(days, closes, symbol_config, split=args.split, trials=trials, spec=spec, feed=feed)
         text = f"=== {symbol} ===\n" + text
         print(text + "\n")
-        trades = [d.trade for d in days if d.trade]
+        trades = [t for d in days for t in d.trades]
         net = sum(t.net_usd for t in trades)
         wins = sum(1 for t in trades if t.net_bps > 0)
         edge = next((line for line in text.splitlines() if line.startswith("EDGE:")), "EDGE: n/a")
