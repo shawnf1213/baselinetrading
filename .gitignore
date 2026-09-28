@@ -16,3 +16,4 @@ dist/
 # Downloaded market data and runtime logs (reproducible, and can be large).
 data/cache/
 logs/
+state/

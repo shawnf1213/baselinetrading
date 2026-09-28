@@ -178,6 +178,19 @@ class MarketData:
         check_fresh(bars, now=now, max_staleness=dt.timedelta(seconds=self._data.max_staleness_seconds))
         return bars
 
+    def display_bars(self, symbol: str, session: Session, end: dt.datetime) -> list[Bar]:
+        """Bars for the chart only, never for decisions: gaps allowed, malformed bars dropped, not cached."""
+        self._guard_holdout(session.date, session.date)
+        feed = self._data.live_feed if session.date >= self._today() else self._data.research_feed
+        end = min(end.replace(second=0, microsecond=0), session.close)
+        if end <= session.open:
+            return []
+        bars = self._fetch(
+            f"{symbol} chart bars for {session.date}",
+            lambda: self._fetcher.minute_bars(symbol, session.open, end, feed),
+        )
+        return sorted((b for b in bars if not bar_problems(b)), key=lambda b: b.start)
+
     # --- internals ----------------------------------------------------------------
 
     def _past_session_bars(self, symbol: str, session: Session, feed: str) -> list[Bar]:

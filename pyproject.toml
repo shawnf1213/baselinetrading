@@ -11,10 +11,12 @@ requires-python = ">=3.11"
 dependencies = [
     "alpaca-py>=0.44,<1",  # Alpaca market data and (paper) trading
     "tzdata",               # time zone database, needed for America/New_York on Windows
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
