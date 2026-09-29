@@ -9,7 +9,8 @@ only if approved (broker.requires_risk_manager checks for exactly that frame).
 
 Entries are checked against every rule below. Exits and the kill switch are
 always approved: reducing risk must never be blocked by the rules that limit
-adding it (stale data, loss limit, kill switch).
+adding it (stale data, loss limit, kill switch). With trading.instrument =
+"options", share purchases are refused from every source, manual included.
 
 The reasons returned by entry_blockers() are the same strings the UI shows next
 to disabled buy controls, so the screen and the code can't disagree.
@@ -30,6 +31,7 @@ from baselinetrading.costs import round_trip_cost
 
 MIN_NOTIONAL_USD = 1.0  # Alpaca's minimum for fractional orders
 SOURCES = ("manual", "strategy", "system")
+SHARES_REFUSED = 'options only (trading.instrument = "options"): share purchases are refused'
 
 
 @dataclass(frozen=True)
@@ -153,8 +155,15 @@ class RiskManager:
             )
         return reasons
 
+    def share_entry_blockers(self, ctx: RiskContext) -> list[str]:
+        """entry_blockers plus the options-only rule: why no share purchase may be made (the manual ticket's reasons)."""
+        reasons = self.entry_blockers(ctx)
+        if self._config.trading.instrument == "options":
+            reasons.append(SHARES_REFUSED)
+        return reasons
+
     def evaluate_entry(self, order: EntryOrder, ctx: RiskContext) -> Verdict:
-        reasons = list(self.entry_blockers(ctx))
+        reasons = self.share_entry_blockers(ctx)
         metrics: dict[str, float] = {}
         if order.source not in SOURCES:
             reasons.append(f"unknown order source {order.source!r}")

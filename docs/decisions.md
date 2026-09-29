@@ -250,4 +250,91 @@ calls or puts after seeing their results counts as a change. Bug fixes that
 make the bot follow these rules as written don't restart it; each gets an
 entry.
 
+## 2026-09-28: Backtest results so far (in-sample only)
+
+The log recorded strategy A's failure and nothing else. These are all the
+results in `results/`. The trial ledger `results/trials.jsonl` has 27 runs of 4
+distinct specs.
+
+| Spec | Stocks | Trades | Mean net per trade (95% CI) | Baselines |
+|---|---|---|---|---|
+| A v1 `261a98ff001fa7ff` | SPY | 1,052 | -2.27 bp (-5.00 to +0.65) | B1 fail, B2 not computed, B3 pass |
+| A2 v1 `da212df8e0cbc847` | SPY | 963 | -2.45 bp (-5.46 to +0.77) | all three fail |
+| A2 v2 `0fdc4b1982b381f4` | 8 x $12,500 | 6,290 | total +$41,856 | no stock passes all three |
+| A2 v3 `4fb0f5c98c9ebd4a` (live) | 8 x $12,500 | 6,904 | total +$43,988 | no stock passes all three |
+
+A2 v3 per stock:
+
+| Stock | Trades | Mean net per trade (95% CI) | B1 | B2 | B3 |
+|---|---|---|---|---|---|
+| SPY | 1,199 | -3.06 bp (-5.96 to -0.18) | fail | fail | fail |
+| AAPL | 837 | +0.64 bp (-5.26 to +6.33) | fail | fail | pass |
+| NVDA | 819 | +8.41 bp (-1.32 to +17.83) | fail | fail | fail |
+| AMD | 750 | +11.61 bp (-3.74 to +27.02) | fail | fail | pass |
+| MSFT | 873 | -3.11 bp (-8.74 to +2.20) | fail | fail | fail |
+| TSLA | 749 | +26.29 bp (+11.66 to +40.88) | pass | fail | pass |
+| META | 876 | -1.42 bp (-8.41 to +5.48) | fail | fail | fail |
+| AMZN | 801 | +9.62 bp (+3.10 to +16.43) | pass | fail | pass |
+
+What this says:
+- Nothing has been run on validation, so no abandon rule has been applied
+  yet. In-sample, every spec on every stock fails at least one baseline: no
+  edge by this project's definition.
+- The positive totals come from TSLA, AMD, NVDA and AMZN, which rose many
+  times over in 2016-2020. A long-only breakout on them collects part of that
+  drift, and buy-and-hold (B2) collects all of it: TSLA's buy-and-hold made
+  +1,429% against the strategy's +193% of its share. These stocks were also
+  picked in 2026, knowing how they turned out.
+- Only TSLA and AMZN have a 95% interval above zero, and both fail B2.
+- These are long-only share backtests. They say nothing about puts, option
+  spreads or time decay.
+- A2 v2 ran twice on 2026-09-28 (10:11 and 10:58). The first run priced
+  per-share costs on split-adjusted prices, which made split stocks look up to
+  40x too expensive (NVDA -24.4 bp, then +7.2 bp). The table uses the second
+  run; the ledger keeps both.
+- Frozen but never run: C, A v2 `6508347fbb9962bf`, A v3 `1903aa2a5f90d8bc`.
+
+**Distinct specs backtested: 4** (the ledger's count, which sets each
+report's significance level), plus the options strategy, tested live only.
+The tuned-parameter count at the end of this log stays 0: no parameter has
+been tuned.
+
+## 2026-09-28: Ten most traded stocks, options only
+
+You want the 10 highest-volume stocks and option trades only, no share
+purchases.
+
+**Stock list rule:** US company stocks with listed options, ranked by
+average daily dollar volume (shares traded x the day's VWAP) over the 20
+sessions from 2026-08-31 to 2026-09-28. Dollar volume, not share count: share
+count ranks cheap stocks first, and their options have the widest spreads for
+their price. Left out:
+- funds: SPY ($33.7B a day) and QQQ ($24.3B) would have ranked 1st and 3rd;
+- stocks the option rules can't buy: one contract of the call or put they
+  would pick for 2026-09-29 must cost at most the $2,000 premium cap. MU (2nd,
+  one call $4,546) and SNDK (3rd, $8,380) fail.
+
+`python -m baselinetrading.universe` reproduces the ranking.
+
+**List:** NVDA, META, TSLA, AAPL, SPCX, AMD, INTC, MSFT, AVGO, GOOGL. Out:
+SPY (a fund) and AMZN (13th). In: SPCX, INTC, AVGO, GOOGL. The list stays
+fixed until a new entry; the ranking is not re-run automatically. This is the
+list in force at the 2026-09-29 open, the options test's starting list.
+
+**Sizing:** the account splits 10 ways ($10,000 each). The premium cap stays
+min(2% of equity, the stock's share) = $2,000. `risk.max_entries_per_day`
+stays 20: ten stocks at 3 entries each could reach 30, so the account limit
+binds on busy days.
+
+**Options only:** with `instrument = "options"`, the risk manager now refuses
+every share purchase, from the strategy and from the manual ticket, which
+shows that reason. Exits are unaffected.
+
+**Bug fix, loss streaks:** option trades were saved to
+`state/adaptive_orb_outcomes.json` under the contract symbol (for example
+`SPY261005C00769000`), so they never counted toward their stock's 3-loss
+streak, and under options the range never adapted. They now count for the
+stock, including the ones saved today. No stock on the new list has 3 losses
+in a row, so every one starts 2026-09-29 with the 5-minute range.
+
 ## Tuned-parameter trial count: 0

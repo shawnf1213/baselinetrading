@@ -26,7 +26,7 @@ from baselinetrading.costs import round_trip_cost
 from baselinetrading.gateway import OrderGateway
 from baselinetrading.journal import summarize
 from baselinetrading.market_data import MarketData
-from baselinetrading.options import is_put
+from baselinetrading.options import is_put, underlying_of
 from baselinetrading.orb import ADAPTIVE_ORB_SPEC, BUY_PUT, ORB_SPEC, WAIT, OrbSpec, find_cross
 from baselinetrading.strategy import BUY, NO_TRADE, SPEC, Decision, StrategySpec, decide_from_data
 
@@ -275,8 +275,9 @@ class Engine:
                     )
 
     def _symbol_outcomes(self, symbol: str) -> list[bool]:
-        # Records from before the split account have no symbol; they were the first symbol's (SPY).
-        return [o["won"] for o in self._outcomes if o.get("symbol", self.symbols[0]) == symbol]
+        # Records from before the split account have no symbol; they were SPY's. An option trade counts for its
+        # stock (records from 2026-09-28 hold the contract symbol).
+        return [o["won"] for o in self._outcomes if underlying_of(o.get("symbol", "SPY")) == symbol]
 
     def active_orb_spec(self, symbol: str | None = None) -> OrbSpec:
         """Today's breakout rules; for the adaptive strategy, the range length the symbol's loss record gives."""
@@ -301,8 +302,8 @@ class Engine:
                if t.source == "strategy" and t.net_pnl is not None and t.entry_time not in seen]
         if not new:
             return
-        self._outcomes += [{"symbol": t.symbol, "entry_time": t.entry_time, "net_pnl": t.net_pnl,
-                            "won": t.net_pnl > 0} for t in new]
+        self._outcomes += [{"symbol": t.key, "entry_time": t.entry_time, "net_pnl": t.net_pnl, "won": t.net_pnl > 0,
+                            **({"contract": t.symbol} if t.underlying else {})} for t in new]
         if self._outcomes_path is not None:
             self._outcomes_path.parent.mkdir(parents=True, exist_ok=True)
             self._outcomes_path.write_text(json.dumps(self._outcomes, indent=1), encoding="utf-8")
@@ -354,6 +355,7 @@ class Engine:
         risk = gw.risk
         session = ctx.session
         blockers = risk.entry_blockers(ctx)
+        share_blockers = risk.share_entry_blockers(ctx)
         bot_reasons = [r for r in blockers if not r.startswith(_TIME_OF_DAY)]
         if breakout:  # data health is per symbol and shown per symbol
             bot_reasons = [r for r in bot_reasons if not r.startswith("market data is not healthy")]
@@ -422,7 +424,7 @@ class Engine:
             "range_minutes": self.range_minutes(self.symbols[0]) if breakout else None,
             "watching": self.watching.get(self.symbols[0]) if breakout else None,
             "symbols": symbols,
-            "entry": {"enabled": not blockers, "reasons": blockers},
+            "entry": {"enabled": not share_blockers, "reasons": share_blockers},  # the manual ticket buys shares
             "data": {"ok": ctx.data_ok, "reason": ctx.data_reason, "price": ctx.reference_price,
                      "last_bar_end": gw.health.last_bar_end.isoformat() if gw.health.last_bar_end else None,
                      "feed": self.data.live_feed},

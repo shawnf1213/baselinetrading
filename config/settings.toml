@@ -21,7 +21,7 @@ settlement_days = 1
 # Hard ceilings in code are 2.0 and 5.0. You can lower these here, not raise them.
 max_risk_per_trade_pct = 2.0
 max_daily_loss_pct = 5.0
-max_entries_per_day = 20  # across all symbols; the breakout enters each symbol at most once a day
+max_entries_per_day = 20  # across all symbols; the breakout enters each symbol up to 3 times a day
 no_new_entries_minutes_before_close = 15
 flatten_minutes_before_close = 5
 
@@ -30,7 +30,9 @@ flatten_minutes_before_close = 5
 # false. Turning trading on takes the bare word true (not "true", not 1).
 enabled = true
 # The account is split equally over these; at most one position per symbol.
-symbols = ["SPY", "AAPL", "NVDA", "AMD", "MSFT", "TSLA", "META", "AMZN"]
+# The 10 most traded stocks by dollar volume that the option rules can trade
+# (python -m baselinetrading.universe, run 2026-09-28; docs/decisions.md).
+symbols = ["NVDA", "META", "TSLA", "AAPL", "SPCX", "AMD", "INTC", "MSFT", "AVGO", "GOOGL"]
 # Which frozen strategy the engine runs (rules in docs/decisions.md):
 # "last_half_hour" (C: one decision at 15:30) or "opening_range_breakout"
 # (A: watches all day from 09:35 for a breakout of the 09:30-09:35 range), or
@@ -38,8 +40,10 @@ symbols = ["SPY", "AAPL", "NVDA", "AMD", "MSFT", "TSLA", "META", "AMZN"]
 # 30 minutes after every 3 losses in a row).
 strategy = "adaptive_opening_range_breakout"
 # What a breakout buys: "shares" (sized to the symbol's share of the account) or
-# "options" (calls about a week out, first strike at or above the price, premium
-# at most max_risk_per_trade_pct of equity; the bot sells them on the stock's stop).
+# "options" (calls or puts about a week out, first strike at or past the price,
+# premium at most max_risk_per_trade_pct of equity; the bot sells them on the
+# stock's stop). With "options" the risk manager refuses every share purchase,
+# the manual ticket's included.
 instrument = "options"
 
 [costs]

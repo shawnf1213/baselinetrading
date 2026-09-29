@@ -13,7 +13,7 @@ the no-change forecast, buy-and-hold, and random entries (see
 | 0 | Edge definition: cost model, breakeven win rate, sample sizes | done |
 | 1 | Project structure, fail-closed config, credentials | done |
 | 2 | Market data with staleness and gap detection | done |
-| 3 | Strategies (separate from execution): C, last-half-hour momentum; A, opening range breakout; A2, adaptive breakout over 8 stocks (the default, `trading.strategy`) | done; rules in [docs/decisions.md](docs/decisions.md) |
+| 3 | Strategies (separate from execution): C, last-half-hour momentum; A, opening range breakout; A2, adaptive breakout over the 10 most traded stocks, bought as calls and puts (the default: `trading.strategy`, `trading.instrument = "options"`) | done; rules in [docs/decisions.md](docs/decisions.md) |
 | 4 | Backtester: costs, walk-forward, baselines, trial ledger, holdout lock | done (needs Alpaca data to run) |
 | 5 | Risk manager with order veto (manual and strategy) | done |
 | 6 | Execution: order gateway, engine, FastAPI backend, React UI | done |
@@ -39,9 +39,18 @@ python -m baselinetrading.edge                           # cost / breakeven / sa
 python -m baselinetrading.data_check                     # fetch one recent session on both feeds
 python -m baselinetrading.signal_check --date 2021-06-01 # a strategy decision and its inputs, no orders
 python -m baselinetrading.backtest --split in_sample     # the backtest report
+python -m baselinetrading.universe                       # the most traded stocks the option rules can buy
 ```
 
 ## The trading client (web UI)
+
+On this PC (Windows), `scripts/start-bot.ps1` loads the keys from your user
+environment, serves the UI and API on http://127.0.0.1:8000, and restarts the
+server if it stops. Start it in its own window; close the window to stop it:
+
+```powershell
+Start-Process powershell -ArgumentList '-NoExit', '-File', 'scripts\start-bot.ps1' -WindowStyle Minimized
+```
 
 Local, with live reload while developing:
 
@@ -155,6 +164,9 @@ src/baselinetrading/
   engine.py                 background strategy engine and the UI status snapshot
   server.py                 FastAPI: auth, one order route, kill switch, WebSocket, serves the UI
   backtest.py               walk-forward backtest with costs, baselines and a trial ledger
+  options.py                which call or put to buy, and how many contracts
+  universe.py               ranks stocks with options by dollar volume (for trading.symbols)
 frontend/                   React + Vite + TypeScript UI (dark theme)
+scripts/start-bot.ps1       runs the server on this PC, restarting it if it stops
 tests/                      one test file per module
 ```

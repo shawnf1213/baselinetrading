@@ -52,6 +52,14 @@ class AlpacaFetcher:
         )
         return [to_bar(b) for b in self._data.get_stock_bars(request).data.get(symbol, [])]
 
+    def daily_volumes(self, symbols: list[str], start: dt.datetime, end: dt.datetime,
+                      feed: str) -> dict[str, list[tuple[dt.date, float, float, float]]]:
+        """(session date, volume, VWAP, close) of each symbol's daily bars; alpaca-py follows the pages."""
+        request = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame.Day, start=start, end=end,
+                                   feed=DataFeed(feed), adjustment=self._adjustment)
+        return {symbol: [(b.timestamp.astimezone(ET).date(), b.volume, b.vwap or b.close, b.close) for b in bars]
+                for symbol, bars in self._data.get_stock_bars(request).data.items()}
+
     def sessions(self, start: dt.date, end: dt.date) -> list[Session]:
         return [to_session(c) for c in self._trading.get_calendar(GetCalendarRequest(start=start, end=end))]
 

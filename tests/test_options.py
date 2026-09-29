@@ -1,6 +1,9 @@
 import datetime as dt
+import json
 
+from baselinetrading.journal import Trade
 from baselinetrading.options import Contract, choose_call, contracts_for, is_option, underlying_of
+from baselinetrading.risk import SHARES_REFUSED
 from tests.helpers import Clock, SESSION, config, engine, gateway
 from tests.test_orb import BREAKOUT, day_bars, serve
 
@@ -88,6 +91,40 @@ def test_shares_mode_ignores_crosses_below_the_range(tmp_path):
     clock.set("11:01", 10)
     eng.tick()
     assert broker.mutations == [] and gw.journal.recent(5, {"signal"}) == []
+
+
+def test_options_only_refuses_share_purchases_from_every_source(tmp_path):
+    gw, broker, _ = opts_gateway(tmp_path, max_entries_per_day=5)
+    for source in ("manual", "strategy"):
+        outcome = gw.submit_entry(source, "SPY", notional=1000, stop_price=495.0)
+        assert not outcome.ok and SHARES_REFUSED in outcome.reasons
+    assert broker.mutations == []
+    assert gw.submit_option_entry("strategy", "SPY", stop_underlying=497.5, budget_usd=2000).ok
+
+
+def test_the_manual_ticket_shows_the_options_only_rule_and_the_bot_stays_armed(tmp_path):
+    cfg = config(strategy="opening_range_breakout", instrument="options")
+    eng, gw, broker, clock, fetcher = engine(tmp_path, clock=Clock("11:01"), cfg=cfg)
+    serve(fetcher, day_bars(SESSION, until="11:01"))
+    eng.tick()
+    assert not eng.status["entry"]["enabled"] and SHARES_REFUSED in eng.status["entry"]["reasons"]
+    assert eng.status["armed"], eng.status["disarmed_reasons"]
+
+
+def test_option_trades_count_toward_their_stocks_loss_streak(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    old = [{"symbol": "SPY261005C00769000", "entry_time": f"t{i}", "net_pnl": -10.0, "won": False} for i in range(2)]
+    (state / "adaptive_orb_outcomes.json").write_text(json.dumps(old))  # saved with the contract symbol
+    eng, gw, *_ = engine(tmp_path, cfg=config(strategy="adaptive_opening_range_breakout", instrument="options"))
+    assert eng.range_minutes("SPY") == 5  # two losses in a row so far
+    gw.closed_trades.append(Trade("strategy", "SPY261005P00767000", 4.0, 5.00, "t2", None, None, 40.0, exit_price=4.50,
+                                  exit_time="t3", exit_reason="stop", underlying="SPY", stop_underlying=770.0,
+                                  multiplier=100))
+    eng.tick()
+    assert eng.range_minutes("SPY") == 15
+    saved = json.loads((state / "adaptive_orb_outcomes.json").read_text())[-1]
+    assert saved["symbol"] == "SPY" and underlying_of(saved["contract"]) == "SPY" and not saved["won"]
 
 
 def test_closing_by_contract_symbol_closes_the_option(tmp_path):

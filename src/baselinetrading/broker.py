@@ -176,6 +176,15 @@ class AlpacaBroker:
         quote = self._options.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=symbol))[symbol]
         return float(quote.bid_price), float(quote.ask_price)
 
+    def stocks_with_options(self) -> list[tuple[str, str, str]]:
+        """(symbol, name, exchange) of every active, tradable US equity with listed options. Read-only."""
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        from alpaca.trading.requests import GetAssetsRequest
+
+        assets = self._client.get_all_assets(GetAssetsRequest(
+            status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY, attributes="options_enabled"))
+        return [(a.symbol, a.name or "", getattr(a.exchange, "value", str(a.exchange))) for a in assets if a.tradable]
+
     @requires_risk_manager
     def submit_market(self, symbol: str, side: str, qty: float, client_order_id: str) -> OrderSnapshot:
         from alpaca.trading.enums import OrderSide, TimeInForce
