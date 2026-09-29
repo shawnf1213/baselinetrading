@@ -212,4 +212,42 @@ entries per stock per day and the one-position-per-stock rule. With
 `instrument = "shares"` down-crosses are ignored (long-only). Live-tested
 only, like the calls.
 
+## 2026-09-28: When to abandon the options strategy
+
+Written before anyone in this thread looked at the option trades' results
+(you may have seen today's P&L in the app). Every stock strategy has an abandon
+rule; the options strategy had none, and live paper trading is its only test.
+
+**What counts:** option trades the strategy opens from 2026-09-29 on, calls
+and puts together, under signal A2 v3 (`4fb0f5c98c9ebd4a`) and option rules
+`breakout-calls-weekly` (`a706cb84095d9236`), on the stock list in force at the
+2026-09-29 open. Today's trades don't count: the rules changed during the day
+(shares, then calls, then puts).
+
+**Net P&L per trade:** (exit fill - entry fill) x contracts x 100, minus the
+bid-ask spread, counted once. If paper buys fill at the ask, the fills already
+paid the spread and nothing more comes off; if they fill nearer the mid, the
+spread quoted at entry is subtracted, as the app does now. Which case applies
+is read from the journal's fills against the recorded quotes, not from the
+P&L. Regulatory fees (cents per contract) are ignored.
+
+**Checkpoint:** after the close on 2026-10-26 (the 20th full session from
+2026-09-29) or when the 100th trade closes, whichever is later. Checked once.
+
+**Abandon if:**
+- at the checkpoint, the mean net P&L per trade is <= 0; or
+- at any point before it, these trades have lost $20,000 in total (20% of
+  the $100,000 sizing equity). This can end the test early, never pass it.
+
+**If it passes,** it keeps paper trading, nothing more. There is no option
+history for the three baselines, so this is a weaker test than the stock
+strategies faced. Real money would need its own entry and a stricter bar (the
+95% interval of the mean above zero).
+
+**No retuning during the test.** Changing the signal, the option rules, the
+stock list or the risk settings starts a new test with a new entry. Dropping
+calls or puts after seeing their results counts as a change. Bug fixes that
+make the bot follow these rules as written don't restart it; each gets an
+entry.
+
 ## Tuned-parameter trial count: 0
