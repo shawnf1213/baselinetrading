@@ -63,6 +63,7 @@ class Engine:
         self._orb_spec = orb_spec
         self._orb_checked: dict[str, dt.datetime] = {}  # per symbol: the minute last evaluated
         self.watching: dict[str, str] = {}  # per symbol: the breakout's latest WAIT reason
+        self.ranges: dict[str, tuple[dt.date, float, float]] = {}  # per symbol: (session date, range high, range low)
         # The adaptive breakout's memory: every closed strategy trade, oldest first.
         state_dir = gateway._state_dir
         self._outcomes_path = state_dir / "adaptive_orb_outcomes.json" if state_dir else None
@@ -249,6 +250,8 @@ class Engine:
                 continue
             options = self._config.trading.instrument == "options"
             decision = find_cross(session, bars, spec, after=minute - MINUTE, until=minute)
+            if decision.inputs:  # the range levels, for the watchlist and the chart
+                self.ranges[symbol] = (session.date, decision.inputs.range_high, decision.inputs.range_low)
             if options and decision.action == WAIT:  # puts: the mirror image, a cross below the range low
                 down = find_cross(session, bars, spec, after=minute - MINUTE, until=minute, direction="down")
                 if down.action == BUY_PUT:
@@ -340,6 +343,7 @@ class Engine:
             "now": now.isoformat(),
             "symbol": self.symbol,
             "strategy": self.strategy,
+            "instrument": self._config.trading.instrument,
             "engine_error": self.last_error,
             "signals": gw.journal.recent(max(10, 2 * len(self.symbols)), {"signal"}),
             "events": gw.journal.recent(40),
@@ -379,8 +383,9 @@ class Engine:
             stops = [o for o in ctx.open_orders if o.symbol == p.symbol and o.type == "stop"]
             trade = next((t for t in gw.open_trades.values() if t.symbol == p.symbol), None)
             positions.append({
-                "symbol": p.symbol, "qty": p.qty, "entry": p.avg_entry_price, "price": p.current_price,
-                "unrealized_pl": p.unrealized_pl, "stop": stops[0].stop_price if stops else None,
+                "symbol": p.symbol, "underlying": underlying_of(p.symbol), "qty": p.qty, "entry": p.avg_entry_price,
+                "price": p.current_price, "unrealized_pl": p.unrealized_pl, "stop": stops[0].stop_price if stops else None,
+                "stop_underlying": trade.stop_underlying if trade else None,  # options: the stock level the bot sells at
                 "source": trade.source if trade else "unknown",
                 "stop_note": (f"{trade.underlying} {'≥' if is_put(trade.symbol) else '≤'} {trade.stop_underlying:.2f}"
                               if trade and trade.stop_underlying else None),
@@ -402,8 +407,12 @@ class Engine:
             for symbol in self.symbols:
                 health = gw.healths[symbol]
                 signal = last_signal.get(symbol) if symbol in gw.decided_symbols else None
+                day, high, low = self.ranges.get(symbol, (None, None, None))
+                today = session is not None and day == session.date
                 symbols.append({
                     "symbol": symbol, "range_minutes": self.range_minutes(symbol),
+                    "range_high": high if today else None, "range_low": low if today else None,
+                    "entries": gw.symbol_buys.get(symbol, 0), "max_entries": self.active_orb_spec(symbol).max_entries,
                     "price": health.price, "data_ok": health.ok, "data_reason": health.reason,
                     "decided": symbol in gw.decided_symbols,
                     "status": (f"{signal['action']}: {signal['reason']}" if signal

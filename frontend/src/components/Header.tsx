@@ -1,39 +1,58 @@
 import type { Status } from "../types";
-import { etTime, usd } from "../format";
-import Reasons from "./Reasons";
+import { etHm, etTime, marketOpen, routineOnly } from "../format";
+import { Brand, Pill } from "./ui";
 
-export default function Header({ status, stale, error }: { status: Status | null; stale: boolean; error: string | null }) {
+// The sticky top bar: which account, whether the bot is armed, the market, data health and the ET clock.
+export default function Header({ status, stale, onLock }: { status: Status | null; stale: boolean; onLock: () => void }) {
   const paper = status?.mode === "PAPER" && status?.account?.paper !== false;
   const armed = !!status?.armed && !stale;
+  const idle = routineOnly(status?.disarmed_reasons ?? []); // disarmed only by the time of day
+  const symbols = status?.symbols ?? [];
+  const open = marketOpen(status);
+  const watching = symbols.filter((s) => !s.decided).length;
+  const total = symbols.length || 1;
+  const healthy = symbols.length ? symbols.filter((s) => s.data_ok).length : status?.data?.ok ? 1 : 0;
+  const feed = (status?.data?.feed ?? "").toUpperCase();
   return (
-    <header className="header">
-      {!paper && status && (
-        <div className="live-banner">NOT A PAPER ACCOUNT. The backend refuses to trade on it.</div>
-      )}
-      <div className="header-row">
-        <div className="brand">
-          baselinetrading <span className={`badge ${paper ? "paper" : "live"}`}>{paper ? "PAPER" : "NOT PAPER"}</span>
+    <header className="topbar">
+      <div className="topbar-inner">
+        <Brand />
+        <div className="pills">
+          {status && <Pill tone={paper ? "good" : "bad"}>{paper ? "Paper account" : "NOT A PAPER ACCOUNT"}</Pill>}
+          <Pill tone={armed ? "good" : stale ? "bad" : idle ? "neutral" : "warn"} pulse={armed}>
+            {armed ? (
+              symbols.length ? (
+                <>Armed · <b>{watching}</b> of {symbols.length} watching</>
+              ) : (
+                <>Armed{status?.next_decision ? ` · decides ${etHm(status.next_decision)} ET` : ""}</>
+              )
+            ) : stale ? (
+              "No live updates"
+            ) : idle ? (
+              "Idle"
+            ) : (
+              "Disarmed"
+            )}
+          </Pill>
+          <Pill tone={open ? "info" : "neutral"}>{open ? "Market open" : "Market closed"}</Pill>
+          {open && (
+            <Pill tone={healthy === total ? "good" : "warn"}>
+              Data <b>{healthy}/{total}</b> {feed}
+            </Pill>
+          )}
+          {status?.instrument === "options" && <Pill>Options · calls &amp; puts</Pill>}
         </div>
-        <div className={`bot-state ${armed ? "armed" : "disarmed"}`}>
-          Strategy {armed ? "ARMED" : "DISARMED"}
-          {armed && (status?.symbols?.length ?? 0) > 0 && <span className="muted"> · watching {status?.symbols?.filter((s) => !s.decided).length} of {status?.symbols?.length} stocks for breakouts</span>}
-          {armed && !(status?.symbols?.length) && status?.next_decision && <span className="muted"> · decides at {etTime(status.next_decision)} ET</span>}
-        </div>
-        <div className="header-facts">
-          <span>{status?.symbol ?? "—"} {status?.data?.price ? usd(status.data.price) : ""}</span>
-          <span className={status?.data?.ok ? "ok" : "bad"}>
-            data {status?.data?.ok ? "healthy" : "not healthy"} ({status?.data?.feed ?? "?"})
+        <div className="topbar-right">
+          <span className="clock">
+            {etTime(status?.now)}
+            <small>ET</small>
           </span>
-          <span className="muted">{status?.account?.number ?? ""}</span>
-          <span className="muted">{etTime(status?.now)} ET</span>
+          <span className="account-no">{status?.account?.number}</span>
+          <button className="btn small" onClick={onLock} title="Forget the token on this device">
+            Lock
+          </button>
         </div>
       </div>
-      {stale && (
-        <div className="stale-banner">
-          No live update for over 10 seconds{error ? `: ${error}` : ""}. Controls are disabled until updates resume.
-        </div>
-      )}
-      {!armed && status && <Reasons title="Strategy disarmed" reasons={status.disarmed_reasons} />}
     </header>
   );
 }

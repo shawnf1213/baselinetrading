@@ -18,13 +18,15 @@ export interface SourcePnl {
 }
 
 export interface Position {
-  symbol: string;
+  symbol: string; // the stock, or an OCC option symbol such as NVDA261009C00230000
+  underlying?: string; // the stock an option is on
   qty: number;
   entry: number;
   price: number;
   unrealized_pl: number;
-  stop: number | null;
-  stop_note?: string | null; // options: the bot-managed stop on the stock
+  stop: number | null; // a broker stop order (shares)
+  stop_underlying?: number | null; // options: the stock level at which the bot sells
+  stop_note?: string | null; // options: the bot-managed stop on the stock, as text
   source: string;
 }
 
@@ -32,6 +34,10 @@ export interface Position {
 export interface SymbolState {
   symbol: string;
   range_minutes: number;
+  range_high?: number | null; // today's opening range, once it is complete
+  range_low?: number | null;
+  entries?: number; // breakout entries today
+  max_entries?: number;
   price: number | null;
   data_ok: boolean;
   data_reason: string;
@@ -45,6 +51,8 @@ export interface Status {
   mode: string;
   now?: string;
   symbol?: string;
+  strategy?: string;
+  instrument?: string; // "shares" or "options"
   armed: boolean;
   disarmed_reasons: string[];
   next_decision?: string | null;
@@ -65,7 +73,7 @@ export interface Status {
   limits?: { max_risk_per_trade_usd: number; entries_today: number; max_entries_per_day: number };
   position?: Position | null;
   positions?: Position[];
-  strategy?: string;
+  session?: { open: string; close: string } | null;
   symbols?: SymbolState[];
   pnl_today?: { manual: SourcePnl; strategy: SourcePnl };
   breakeven?: { round_trip_cost_usd: number; round_trip_cost_bps: number; notional_usd: number } | null;

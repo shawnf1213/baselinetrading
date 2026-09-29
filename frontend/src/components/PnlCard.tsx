@@ -1,58 +1,55 @@
 import type { SourcePnl, Status } from "../types";
 import { num, pct, tone, usd } from "../format";
+import { Card } from "./ui";
 
-// Today's P&L, split by who placed the trade, measured against the cost of a round trip.
-export default function PnlCard({ status }: { status: Status | null }) {
-  const account = status?.account;
-  const be = status?.breakeven;
+// Today's closed trades, split by who placed them, net of modelled costs.
+export default function PnlCard({ status, className = "" }: { status: Status | null; className?: string }) {
   const rows: [string, SourcePnl | undefined][] = [
     ["Strategy", status?.pnl_today?.strategy],
     ["Manual", status?.pnl_today?.manual],
   ];
-  const used = account ? Math.min(1, Math.max(0, -account.day_pnl / account.daily_loss_limit)) : 0;
+  const be = status?.breakeven;
   return (
-    <div>
-      <div className="panel-title">Today</div>
-      <div className="stats">
-        <div>
-          <div className="label">Account day P&amp;L (broker)</div>
-          <div className={`value ${tone(account?.day_pnl)}`}>{usd(account?.day_pnl, true)}</div>
-        </div>
-        <div>
-          <div className="label">Daily loss limit</div>
-          <div className="value">−{usd(account?.daily_loss_limit)}</div>
-          <div className="meter"><span style={{ width: `${used * 100}%` }} /></div>
-        </div>
-        <div>
-          <div className="label">Breakeven bar: cost of one strategy round trip</div>
-          <div className="value">{be ? `${usd(be.round_trip_cost_usd)} (${num(be.round_trip_cost_bps, 1)} bp)` : "—"}</div>
-        </div>
-        <div>
-          <div className="label">Entries today</div>
-          <div className="value">{status?.limits ? `${status.limits.entries_today} / ${status.limits.max_entries_per_day}` : "—"}</div>
-        </div>
-      </div>
-      <table>
-        <thead>
-          <tr><th>Source</th><th>Trades</th><th>Gross</th><th>Modelled costs</th><th>Net</th><th>Win rate (95% CI)</th></tr>
-        </thead>
-        <tbody>
-          {rows.map(([name, r]) => (
-            <tr key={name}>
-              <td>{name}</td>
-              <td>{r?.trades ?? 0}</td>
-              <td className={tone(r?.gross_pnl)}>{usd(r?.gross_pnl, true)}</td>
-              <td>{usd(r?.costs)}</td>
-              <td className={tone(r?.net_pnl)}>{usd(r?.net_pnl, true)}</td>
-              <td>{r?.win_rate_ci ? `${pct(r.win_rate)} (${pct(r.win_rate_ci[0], 0)}–${pct(r.win_rate_ci[1], 0)})` : "—"}</td>
+    <Card title="Closed trades today" sub="by who placed them" className={className}>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th className="num">Trades</th>
+              <th className="num">Net</th>
+              <th className="num">Win rate</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="muted small">
-        Paper fills charge no fees, so modelled fees and slippage are subtracted. A day's results are far too few trades to judge
-        an edge (hundreds are needed); see docs/methodology.md.
+          </thead>
+          <tbody>
+            {rows.map(([name, r]) => (
+              <tr key={name}>
+                <td>
+                  {name}
+                  <span className="sub">
+                    gross {usd(r?.gross_pnl, true)} · costs {usd(r?.costs)}
+                  </span>
+                </td>
+                <td className="num">{r?.trades ?? 0}</td>
+                <td className={`num ${tone(r?.net_pnl)}`}>{usd(r?.net_pnl, true)}</td>
+                <td className="num">
+                  {pct(r?.win_rate, 0)}
+                  {r?.win_rate_ci && <span className="sub">{`${pct(r.win_rate_ci[0], 0)}–${pct(r.win_rate_ci[1], 0)}`}</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="card-foot">
+        Paper fills charge nothing, so modelled costs are taken off. The range under a win rate is its 95% interval: one day is
+        far too few trades to judge an edge.
       </p>
-    </div>
+      {status?.instrument !== "options" && be && (
+        <p className="card-foot">
+          Breakeven bar: one strategy round trip costs {usd(be.round_trip_cost_usd)} ({num(be.round_trip_cost_bps, 1)} bp).
+        </p>
+      )}
+    </Card>
   );
 }

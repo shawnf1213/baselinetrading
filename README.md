@@ -89,18 +89,22 @@ every request. Use an always-on host; one that sleeps when idle would miss the
 breakouts from 09:35 and the 15:55 exit. The strategy engine runs inside the backend
 process, so the UI shows "engine is not running" if it stops.
 
-The web UI:
-- Watchlist of every traded stock: price, opening range, data health, breakout status.
-- Chart (TradingView Lightweight Charts, 1-minute, the stock picked in the watchlist) with entry and stop
-  lines. It's for display only; decisions use validated data.
-- Manual order ticket: a market buy with a mandatory stop.
-- Open position: close it.
+The web UI (styled after baselineev.com; it works on a phone too):
+- Top bar: paper account, armed / idle / disarmed, market open, data health, the ET clock, and Lock.
+- Today at a glance: the account's P&L, open and closed P&L, entries used, and the daily loss limit.
+- Chart (TradingView Lightweight Charts, 1-minute) of the stock picked in the watchlist or the tabs above
+  it, with the opening range (where calls and puts trigger) and any stop. It's for display only;
+  decisions use validated data.
+- Watchlist of every traded stock: price, opening range, state, entries used, and what happens next.
+- Open positions, options shown as stock, call or put, strike and expiry, each closable.
 - Kill switch: type FLATTEN to confirm.
-- Strategy armed/disarmed, with every reason.
-- Today's P&L per source (manual vs strategy) against the breakeven cost.
-- The last strategy decisions with their inputs, and the full journal.
+- Manual order ticket (a market buy with a mandatory stop); with options only, a note says why it's off.
+- Closed trades today per source (manual vs strategy), the strategy decisions with their inputs, and the
+  journal.
 
-Every disabled control lists why, using the risk manager's own wording.
+Every disabled control lists why, using the risk manager's own wording. To work on the UI without the
+bot, `python scripts/ui_demo.py` serves canned data (a stand-in backend on :8010, any token) and
+`npm --prefix frontend run dev:demo` runs the live-reloading UI against it.
 
 **One path to the broker.** Browser -> FastAPI -> OrderGateway ->
 RiskManager.execute -> Alpaca. The browser never sees the Alpaca keys and

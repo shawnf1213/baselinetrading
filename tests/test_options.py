@@ -109,6 +109,7 @@ def test_the_manual_ticket_shows_the_options_only_rule_and_the_bot_stays_armed(t
     eng.tick()
     assert not eng.status["entry"]["enabled"] and SHARES_REFUSED in eng.status["entry"]["reasons"]
     assert eng.status["armed"], eng.status["disarmed_reasons"]
+    assert eng.status["instrument"] == "options"  # the UI swaps the share ticket for a note
 
 
 def test_option_trades_count_toward_their_stocks_loss_streak(tmp_path):

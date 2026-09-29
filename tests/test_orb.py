@@ -112,6 +112,8 @@ def test_engine_keeps_watching_without_a_breakout(tmp_path):
     eng.tick()
     assert gw.journal.recent(5, {"signal"}) == [] and broker.mutations == []
     assert "watching" in eng.status["watching"]
+    row = eng.status["symbols"][0]  # the range levels and entry count the watchlist and chart show
+    assert (row["range_high"], row["range_low"], row["entries"], row["max_entries"]) == (500.1, 499.9, 0, 3)
 
 
 def test_a_late_engine_waits_for_the_next_cross_instead_of_chasing(tmp_path):
