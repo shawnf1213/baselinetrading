@@ -1,6 +1,6 @@
 """FastAPI backend: the only thing the browser talks to. The browser never talks to Alpaca.
 
-    export BASELINE_UI_TOKEN=...   # 24+ characters; the UI asks for it once
+    export BASELINE_UI_TOKEN=...   # 8+ characters; the UI asks for it once
     uvicorn baselinetrading.server:app --host 127.0.0.1 --port 8000
 
 Routes (all but /api/health need the token):
@@ -38,7 +38,9 @@ from baselinetrading.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from baselinetrading.gateway import Outcome
 
 TOKEN_VAR = "BASELINE_UI_TOKEN"
-MIN_TOKEN_LENGTH = 24
+# Lowered from 24 on 2026-09-28 for a memorable token: the site is reachable only from your own Tailscale
+# devices. Anywhere more exposed, use a long random token (there is no limit on login attempts).
+MIN_TOKEN_LENGTH = 8
 ROOT = DEFAULT_CONFIG_PATH.parents[1]
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
