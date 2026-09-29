@@ -52,6 +52,16 @@ server if it stops. Start it in its own window; close the window to stop it:
 Start-Process powershell -ArgumentList '-NoExit', '-File', 'scripts\start-bot.ps1' -WindowStyle Minimized
 ```
 
+From your phone or laptop, privately: Tailscale Serve forwards
+`https://<pc-name>.<tailnet>.ts.net` to the server on this PC. Only devices
+signed in to your Tailscale account can open it; the server still listens only
+on 127.0.0.1, and no firewall rule or router port is opened. Log in with the
+same `BASELINE_UI_TOKEN`. Set up once (it survives restarts):
+
+```powershell
+tailscale serve --bg 8000          # turn it off: tailscale serve --https=443 off
+```
+
 Local, with live reload while developing:
 
 ```bash
